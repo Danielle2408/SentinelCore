@@ -281,7 +281,8 @@ internal sealed class MainForm : Form
             CameraIndex: _settings.VisualCameraIndex,
             CaptureSeconds: 5,
             MaximumWaitSeconds: 60,
-            Enabled: enabled);
+            Enabled: enabled,
+            AlternativeLivenessModelPath: Path.Combine(models, "Facenox-MiniFASNetV2-SE.onnx"));
     }
 
     private async void EnrollFaceAsync()

@@ -19,13 +19,18 @@ powershell -ExecutionPolicy Bypass -File .\Mode_Validation\Modeles\Download-Mode
 dotnet build .\SentinelCore.Demon1.slnx --configuration Release
 ```
 
-Le premier script télécharge YuNet, SFace et MiniFASNetV2 vers `%LOCALAPPDATA%\SentinelCore\Demon1Learning\models`, puis vérifie leur SHA-256. Les poids ONNX ne sont pas suivis dans Git. Les références, licences et limites figurent dans `Modeles/README.md` et `COMPARAISON_SOLUTIONS.md`.
+Le premier script télécharge YuNet, SFace, MiniFASNetV2 et le modèle expérimental Facenox vers `%LOCALAPPDATA%\SentinelCore\Demon1Learning\models`, puis vérifie leur SHA-256. Les poids ONNX ne sont pas suivis dans Git. Facenox est évalué pour comparaison seulement; son score ne valide pas une identité. Les références, licences et limites figurent dans `Modeles/README.md` et `COMPARAISON_SOLUTIONS.md`.
 
 Ouvrir ensuite la fenêtre de contrôle du mode apprentissage. Choisir un profil, confirmer le mot de passe maître et utiliser « Enrôler le visage » en regardant la caméra dans une pièce éclairée. Dans Paramètres, activer « Autoriser le contrôle visuel demandé par le démon 3 ». Le bouton « Tester demande D3 + caméra » crée une vraie demande D3, ouvre la caméra, capture une séquence et exécute les modèles de détection, de comparaison et d’anti-usurpation. Aucun résultat n’est préfabriqué.
 
 Les détails des captures (nombre d’images lues, visages trouvés, taille du visage et scores de présence) sont visibles avec les résultats dans « Rapports visuels ». Une caméra indisponible, aucun visage, plusieurs visages, une faible qualité ou une présence non confirmée doit donner un résultat `INDETERMINATE`, jamais une identité positive.
 
-Le programme `simulation/SentinelCore.Demon1.VisualSimulation` peut aussi vérifier les cas techniques depuis PowerShell : `--camera-d3` essaie l’enrôlement puis l’appel D3 réel, `--camera-request` fait l’appel D3 avec la webcam réelle, et `--camera-failure` vérifie la réponse en cas d’index caméra invalide. Les essais écrivent des résultats sans conserver les captures ni les profils temporaires.
+Le programme `simulation/SentinelCore.Demon1.VisualSimulation` peut aussi vérifier les cas techniques depuis PowerShell : `--camera-d3` essaie l’enrôlement puis l’appel D3 réel, `--camera-request` fait l’appel D3 avec la webcam réelle, `--camera-failure` vérifie une caméra indisponible, et `--camera-deadline` déclenche une échéance D3 courte sur la vraie caméra. Pour éviter le chargement de la DLL native OpenCV depuis un chemin profond, publier le simulateur Win-x64 dans un chemin court (`C:\scv`) puis lancer son exécutable depuis là. Les essais écrivent des résultats sans conserver les captures ni les profils temporaires.
+
+```powershell
+dotnet publish .\Mode_Validation\simulation\SentinelCore.Demon1.VisualSimulation\SentinelCore.Demon1.VisualSimulation.csproj -c Release -r win-x64 --self-contained false -p:UseAppHost=true -o C:\scv
+& C:\scv\SentinelCore.Demon1.VisualSimulation.exe --camera-d3
+```
 
 ## Interface inter-démons
 

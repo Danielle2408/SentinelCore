@@ -30,11 +30,12 @@ public sealed record VisualVerificationOptions(
     int CaptureSeconds = 5,
     int MaximumWaitSeconds = 60,
     double SimilarityThreshold = 0.363,
-    double MinimumLivenessProbability = 0.80,
+    double MinimumLivenessProbability = 0.60,
     double MinimumFacePixels = 100,
     float MinimumFaceConfidence = 0.60f,
     int LiveClassIndex = 1,
-    bool Enabled = true);
+    bool Enabled = true,
+    string? AlternativeLivenessModelPath = null);
 
 /// <summary>
 /// Local-only visual enrollment and alert-time verification. It never sends frames or face
@@ -48,6 +49,7 @@ public sealed class VisualVerificationService : IDisposable
     private readonly FaceDetectorYN _detector;
     private readonly FaceRecognizerSF _recognizer;
     private readonly Net _liveness;
+    private readonly Net? _alternativeLiveness;
     private readonly ProtectedVisualStore _store;
     private bool _disposed;
     public bool HasEnrolledProfiles => _store.LoadTemplates().Count > 0;
@@ -67,7 +69,12 @@ public sealed class VisualVerificationService : IDisposable
         _liveness = Cv2.Dnn.ReadNetFromONNX(options.MiniFasNetModelPath)
             ?? throw new InvalidDataException("OpenCV n’a pas pu charger le modèle anti-usurpation.");
         _liveness.SetPreferableBackend(Backend.OPENCV);
-        _liveness.SetPreferableTarget(Target.CPU);
+        if (!string.IsNullOrWhiteSpace(options.AlternativeLivenessModelPath) && File.Exists(options.AlternativeLivenessModelPath))
+        {
+            _alternativeLiveness = Cv2.Dnn.ReadNetFromONNX(options.AlternativeLivenessModelPath)
+                ?? throw new InvalidDataException("OpenCV n’a pas pu charger le modèle anti-usurpation alternatif.");
+            _alternativeLiveness.SetPreferableBackend(Backend.OPENCV);
+        }
     }
 
     /// <summary>Enroll one configured profile from a live 5-second camera sequence.</summary>
@@ -125,7 +132,9 @@ public sealed class VisualVerificationService : IDisposable
         var query = AverageAndNormalize(sequence.Embeddings);
         var ranked = _store.LoadTemplates().Select(x => (x.Key, Score: Cosine(query, x.Value)))
             .OrderByDescending(x => x.Score).ToArray();
-        if (ranked.Length == 0) return Inconclusive(correlationId, started, "NO_ENROLLED_VISUAL_PROFILE", sequence, SaveEvidence(sequence.BestFrame, correlationId));
+        if (ranked.Length == 0)
+            return new(correlationId, DateTimeOffset.UtcNow, VisualMatch.INDETERMINATE, liveness, null, null,
+                sequence.Quality, sequence.Embeddings.Count, SaveEvidence(sequence.BestFrame, correlationId), "NO_ENROLLED_VISUAL_PROFILE");
         var best = ranked[0];
         var margin = ranked.Length == 1 ? 1 : best.Score - ranked[1].Score;
         if (margin < 0.04)
@@ -151,6 +160,8 @@ public sealed class VisualVerificationService : IDisposable
                 camera.Set(VideoCaptureProperties.FrameHeight, 480);
                 var embeddings = new List<float[]>();
                 var liveScores = new List<double>();
+                var alternativeLiveScores = new List<double>();
+                var faceBrightness = new List<double>();
                 byte[]? bestFrame = null;
                 var bestFrameQuality = -1.0;
                 var qualitySum = 0.0;
@@ -158,6 +169,7 @@ public sealed class VisualVerificationService : IDisposable
                 var maxFaceSize = 0.0;
                 var deadline = DateTimeOffset.UtcNow.AddSeconds(_options.CaptureSeconds);
                 using var frame = new Mat();
+                using var grayFrame = new Mat();
                 using var detections = new Mat();
                 using var aligned = new Mat();
                 using var features = new Mat();
@@ -185,6 +197,16 @@ public sealed class VisualVerificationService : IDisposable
                     var faceWidth = detections.At<float>(0, 2);
                     var faceHeight = detections.At<float>(0, 3);
                     maxFaceSize = Math.Max(maxFaceSize, Math.Min(faceWidth, faceHeight));
+                    if (faceWidth > 0 && faceHeight > 0)
+                    {
+                        var faceLeft = Math.Clamp((int)Math.Floor(detections.At<float>(0, 0)), 0, frame.Width - 1);
+                        var faceTop = Math.Clamp((int)Math.Floor(detections.At<float>(0, 1)), 0, frame.Height - 1);
+                        var faceRight = Math.Clamp((int)Math.Ceiling(detections.At<float>(0, 0) + faceWidth), faceLeft + 1, frame.Width);
+                        var faceBottom = Math.Clamp((int)Math.Ceiling(detections.At<float>(0, 1) + faceHeight), faceTop + 1, frame.Height);
+                        Cv2.CvtColor(frame, grayFrame, ColorConversionCodes.BGR2GRAY);
+                        using var faceGrayCrop = new Mat(grayFrame, new Rect(faceLeft, faceTop, faceRight - faceLeft, faceBottom - faceTop));
+                        faceBrightness.Add(Cv2.Mean(faceGrayCrop).Val0);
+                    }
                     var detectorScore = detections.At<float>(0, 14);
                     if (Math.Min(faceWidth, faceHeight) < _options.MinimumFacePixels || detectorScore < _options.MinimumFaceConfidence)
                     {
@@ -198,13 +220,15 @@ public sealed class VisualVerificationService : IDisposable
                     frameQuality = Math.Clamp(detectorScore * Math.Min(1.0, Math.Min(faceWidth, faceHeight) / 180.0), 0, 1);
                     qualitySum += frameQuality;
                     liveScores.Add(GetLivenessProbability(frame, detections));
+                    if (_alternativeLiveness is not null)
+                        alternativeLiveScores.Add(GetAlternativeLivenessProbability(frame, detections));
                     if (frameQuality > bestFrameQuality)
                     { Cv2.ImEncode(".jpg", frame, out bestFrame); bestFrameQuality = frameQuality; }
                     Thread.Sleep(SampleIntervalMs);
                 }
                 return new CaptureSequence(embeddings, liveScores, embeddings.Count == 0 ? 0 : qualitySum / embeddings.Count, bestFrame,
                     framesRead, framesNoFace, framesMultipleFaces, framesTooSmall, framesLowConfidence, maxFaceSize,
-                    $"read={framesRead};face={embeddings.Count};none={framesNoFace};multiple={framesMultipleFaces};small={framesTooSmall};lowConfidence={framesLowConfidence};maxFacePx={maxFaceSize:0};liveCount={liveScores.Count};liveAvg={(liveScores.Count == 0 ? 0 : liveScores.Average()):0.000};liveMin={(liveScores.Count == 0 ? 0 : liveScores.Min()):0.000};liveMax={(liveScores.Count == 0 ? 0 : liveScores.Max()):0.000}");
+                    $"read={framesRead};face={embeddings.Count};none={framesNoFace};multiple={framesMultipleFaces};small={framesTooSmall};lowConfidence={framesLowConfidence};maxFacePx={maxFaceSize:0};faceLumaCount={faceBrightness.Count};faceLumaAvg={(faceBrightness.Count == 0 ? 0 : faceBrightness.Average()):0.0};faceLumaMin={(faceBrightness.Count == 0 ? 0 : faceBrightness.Min()):0.0};faceLumaMax={(faceBrightness.Count == 0 ? 0 : faceBrightness.Max()):0.0};liveCount={liveScores.Count};liveAvg={(liveScores.Count == 0 ? 0 : liveScores.Average()):0.000};liveMin={(liveScores.Count == 0 ? 0 : liveScores.Min()):0.000};liveMax={(liveScores.Count == 0 ? 0 : liveScores.Max()):0.000};facenoxCount={alternativeLiveScores.Count};facenoxAvg={(alternativeLiveScores.Count == 0 ? 0 : alternativeLiveScores.Average()):0.000};facenoxMin={(alternativeLiveScores.Count == 0 ? 0 : alternativeLiveScores.Min()):0.000};facenoxMax={(alternativeLiveScores.Count == 0 ? 0 : alternativeLiveScores.Max()):0.000}");
             }, token).ConfigureAwait(false);
         }
         finally { CameraCaptureGate.Release(); }
@@ -240,6 +264,60 @@ public sealed class VisualVerificationService : IDisposable
             ? scores[_options.LiveClassIndex]
             : Math.Exp(scores[_options.LiveClassIndex] - scores.Max()) / scores.Sum(x => Math.Exp(x - scores.Max()));
         return Math.Clamp(probability, 0, 1);
+    }
+
+    /// <summary>
+    /// Experimental Facenox MiniFASNetV2-SE score for A/B diagnostics only. Its result never
+    /// participates in MATCH/NO_MATCH until it has been calibrated against this camera and
+    /// presentation attacks. Preprocessing follows the upstream implementation: RGB, square
+    /// 1.5x face crop with reflected borders, 128x128 and float pixels scaled to [0,1].
+    /// </summary>
+    private double GetAlternativeLivenessProbability(Mat frame, Mat face)
+    {
+        if (_alternativeLiveness is null) return 0;
+
+        using var rgb = new Mat();
+        Cv2.CvtColor(frame, rgb, ColorConversionCodes.BGR2RGB);
+        var x = (int)face.At<float>(0, 0);
+        var y = (int)face.At<float>(0, 1);
+        var width = (int)face.At<float>(0, 2);
+        var height = (int)face.At<float>(0, 3);
+        var cropSize = Math.Max(1, (int)(Math.Max(width, height) * 1.5));
+        var centerX = x + width / 2.0;
+        var centerY = y + height / 2.0;
+        var left = (int)(centerX - cropSize / 2.0);
+        var top = (int)(centerY - cropSize / 2.0);
+        var right = left + cropSize;
+        var bottom = top + cropSize;
+        var sourceLeft = Math.Clamp(left, 0, rgb.Width);
+        var sourceTop = Math.Clamp(top, 0, rgb.Height);
+        var sourceRight = Math.Clamp(right, 0, rgb.Width);
+        var sourceBottom = Math.Clamp(bottom, 0, rgb.Height);
+        if (sourceRight <= sourceLeft || sourceBottom <= sourceTop) return 0;
+
+        using var sourceCrop = new Mat(rgb, new Rect(sourceLeft, sourceTop, sourceRight - sourceLeft, sourceBottom - sourceTop));
+        using var square = new Mat();
+        Cv2.CopyMakeBorder(sourceCrop, square,
+            Math.Max(0, -top), Math.Max(0, bottom - rgb.Height),
+            Math.Max(0, -left), Math.Max(0, right - rgb.Width),
+            BorderTypes.Reflect101);
+        if (square.Width != cropSize || square.Height != cropSize)
+            throw new InvalidDataException("La coupe de visage expérimentale n’a pas les dimensions attendues.");
+
+        using var resized = new Mat();
+        Cv2.Resize(square, resized, new Size(128, 128), 0, 0, InterpolationFlags.Area);
+        using var input = Cv2.Dnn.BlobFromImage(resized, 1.0 / 255.0, new Size(128, 128), new Scalar(), false, false);
+        _alternativeLiveness.SetInput(input);
+        using var output = _alternativeLiveness.Forward();
+        if (output.Total() != 2) throw new InvalidDataException("Le modèle Facenox doit produire exactement deux scores.");
+
+        // Upstream labels logits[0] as Real and logits[1] as Spoof.
+        var real = output.At<float>(0);
+        var spoof = output.At<float>(1);
+        var max = Math.Max(real, spoof);
+        var realExp = Math.Exp(real - max);
+        var spoofExp = Math.Exp(spoof - max);
+        return Math.Clamp(realExp / (realExp + spoofExp), 0, 1);
     }
 
     private string SaveEvidence(byte[]? jpeg, string correlationId)
@@ -309,7 +387,7 @@ public sealed class VisualVerificationService : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
-        _detector.Dispose(); _recognizer.Dispose(); _liveness.Dispose();
+        _detector.Dispose(); _recognizer.Dispose(); _liveness.Dispose(); _alternativeLiveness?.Dispose();
     }
 
     private sealed record CaptureSequence(List<float[]> Embeddings, List<double> LiveScores, double Quality, byte[]? BestFrame,

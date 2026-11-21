@@ -66,7 +66,8 @@ internal sealed class StartupAuthDialog : Form
             CameraIndex: _settings.VisualCameraIndex,
             CaptureSeconds: 5,
             MaximumWaitSeconds: 60,
-            Enabled: _settings.VisualVerificationEnabled));
+            Enabled: _settings.VisualVerificationEnabled,
+            AlternativeLivenessModelPath: Path.Combine(modelRoot, "Facenox-MiniFASNetV2-SE.onnx")));
     }
 
     private void VerifyPassword()
