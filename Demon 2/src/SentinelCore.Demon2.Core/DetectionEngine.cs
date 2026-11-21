@@ -202,6 +202,10 @@ public sealed class DetectionEngine(TimeSpan? correlationWindow = null, TimeSpan
         var result = new List<string>();
         if (current.EventType is ThreatEventType.FILE_CREATED_OR_CHANGED or ThreatEventType.NETWORK_CONNECTION &&
             current.ProcessId is null && current.ProcessGuid is null) result.Add("processId/processGuid");
+        if (current.EventType is ThreatEventType.NETWORK_CONNECTION or ThreatEventType.DOMAIN_QUERY &&
+            (string.IsNullOrWhiteSpace(current.RemoteHost) || current.Fields?.GetValueOrDefault("invalidRemoteHost") == "true"))
+            result.Add("remoteHost");
+        if (current.Fields?.GetValueOrDefault("invalidSha256") == "true") result.Add("sha256");
         if (ContainsAny(text, "sans command line", "sans ligne de commande", "ligne de commande absente")) result.Add("commandLine");
         if (text.Contains("parent introuvable", StringComparison.OrdinalIgnoreCase) || text.Contains("sans création de processus correspondante", StringComparison.OrdinalIgnoreCase)) result.Add("parentProcess");
         if (text.Contains("source réseau arrêtée", StringComparison.OrdinalIgnoreCase) || text.Contains("capteur réseau indisponible", StringComparison.OrdinalIgnoreCase)) result.Add("networkSensor");

@@ -19,6 +19,7 @@ internal static class Demon2Checks
         try
         {
             await Check("Sysmon event normalization", NormalizeSysmonEvents);
+            await Check("Security input and diagnostic logging boundaries", SecurityInputBoundaries);
             await Check("Common envelope validation and JSONL", ValidateAndPublishEnvelope);
             if (OperatingSystem.IsWindows()) await Check("Persistent Named Pipe service session", PersistentNamedPipeSession);
             await Check("SQLite idempotence, cursor, and expiry", StoreAndExpiry);
@@ -29,6 +30,8 @@ internal static class Demon2Checks
             await Check("Benign and suspicious chains", EvaluateRules);
             await Check("Telemetry gaps and bounded health", EvaluateTelemetryGaps);
             await Check("Pipeline resilience, malformed input, and recovery", PipelineResilience);
+            await Check("Continuous pipeline stop and restart", ContinuousPipelineLifecycle);
+            await Check("Sustained-load performance measurement", SustainedLoadPerformance);
             Console.WriteLine($"Demon 2 checks passed: {_passed}.");
             return 0;
         }
@@ -49,13 +52,14 @@ internal static class Demon2Checks
     private static Task NormalizeSysmonEvents()
     {
         var normalizer = new SysmonEventNormalizer();
+        var validSha256 = new string('A', 64);
         var script = EventXml(1, 101, "Image", @"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
             ("ProcessId", "0x1234"), ("ProcessGuid", "{p1}"), ("ParentProcessId", "0x0010"),
-            ("ParentProcessGuid", "{p0}"), ("Signed", "false"), ("Hashes", "SHA256=ABC"));
+            ("ParentProcessGuid", "{p0}"), ("Signed", "false"), ("Hashes", "SHA256=" + validSha256));
         True(normalizer.TryNormalize(new(script, "bookmark-1"), out var normalized, out _), "Sysmon process event should normalize.");
         Equal(ThreatEventType.SCRIPT_ACTIVITY, normalized!.EventType, "Interpreter should map to script activity.");
         Equal(4660, normalized.ProcessId, "Hexadecimal process IDs should normalize.");
-        Equal("ABC", normalized.Sha256, "SHA256 should be extracted.");
+        Equal(validSha256, normalized.Sha256, "A correctly sized SHA256 should be extracted.");
         Equal("bookmark-1", normalized.SourceCursor, "Bookmark should be retained as the collector cursor.");
         Equal("{p0}", normalized.ParentProcessGuid, "Parent process GUID must remain available for chain reconstruction.");
         Equal(16, normalized.ParentProcessId, "Parent PID must normalize from hexadecimal.");
@@ -75,6 +79,33 @@ internal static class Demon2Checks
         Equal(ThreatEventType.DOMAIN_QUERY, dnsEvent!.EventType, "DNS query must not be misrepresented as a connection or reputation verdict.");
         True(!normalizer.TryNormalize(new(EventXml(255, 108, "Image", "test.exe"), null), out _, out _),
             "Unsupported source events must not create normalized evidence.");
+        var invalidHash = EventXml(1, 111, "Image", "app.exe", ("Hashes", "SHA256=ABC"));
+        True(normalizer.TryNormalize(new(invalidHash, null), out var invalidHashEvent, out _),
+            "A bad optional hash should not discard otherwise valid process telemetry.");
+        True(invalidHashEvent!.Sha256 is null && invalidHashEvent.Fields?.GetValueOrDefault("invalidSha256") == "true",
+            "An invalid optional hash must be marked unavailable rather than accepted as evidence.");
+        True(new DetectionEngine().Evaluate(invalidHashEvent, [invalidHashEvent], Now).Gaps
+            .Any(x => x.MissingFields.Contains("sha256")), "A malformed optional hash must remain visible as missing telemetry.");
+        var invalidHost = EventXml(3, 113, "DestinationHostname", "not a valid host", ("ProcessId", "41"));
+        True(normalizer.TryNormalize(new(invalidHost, null), out var invalidHostEvent, out _),
+            "An invalid optional remote host should not discard otherwise valid network telemetry.");
+        True(invalidHostEvent!.RemoteHost is null && invalidHostEvent.Fields?.GetValueOrDefault("invalidRemoteHost") == "true",
+            "Invalid remote host text must not be exposed as a normalized destination.");
+        True(new DetectionEngine().Evaluate(invalidHostEvent, [invalidHostEvent], Now).Gaps
+            .Any(x => x.MissingFields.Contains("remoteHost")), "Invalid remote host data must remain visible as missing telemetry.");
+        var commandLine = EventXml(1, 114, "Image", @"C:\Tools\odd & harmless.exe", ("CommandLine", "password=fixture-secret & whoami"),
+            ("ProcessId", "40"));
+        True(normalizer.TryNormalize(new(commandLine, null), out var opaquePathEvent, out _),
+            "Untrusted process strings must be handled as telemetry, not commands.");
+        Equal(@"C:\Tools\odd & harmless.exe", opaquePathEvent!.ImagePath, "Unusual image text remains opaque evidence.");
+        True(opaquePathEvent.UserSid is null && opaquePathEvent.Fields?.ContainsKey("commandLine") != true,
+            "User SID and command-line data must not be collected into canonical events.");
+        True(!normalizer.TryNormalize(new(EventXml(3, 112, "DestinationIp", "192.0.2.1", ("DestinationPort", "70000")), null), out _, out _),
+            "An out-of-range network port must be rejected as malformed telemetry.");
+        True(!normalizer.TryNormalize(new(new string(' ', SysmonEventNormalizer.MaxSysmonXmlCharacters + 1), null), out _, out _),
+            "Oversized provider XML must be rejected before parsing.");
+        True(!normalizer.TryNormalize(new("<!DOCTYPE Event []><Event />", null), out _, out _),
+            "DTD processing must be prohibited for provider XML.");
 
         var download = EventXml(15, 102, "TargetFilename", @"C:\Users\Public\demo.exe:Zone.Identifier", ("ProcessId", "0x200"));
         True(normalizer.TryNormalize(new(download, null), out var downloaded, out _), "Zone.Identifier should be observed as a download.");
@@ -97,6 +128,47 @@ internal static class Demon2Checks
         return Task.CompletedTask;
     }
 
+    private static async Task SecurityInputBoundaries()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "sentinelcore-d2-log-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var console = new StringWriter();
+            using (var writer = new ServiceErrorLogWriter(directory, console))
+            {
+                writer.WriteLine("token=fixture-secret password='private phrase' authorization:BearerValue");
+                writer.Write("secret=inline-secret");
+                writer.Flush();
+            }
+            var logPath = Directory.GetFiles(directory, "*.log").Single();
+            var contents = File.ReadAllText(logPath);
+            True(contents.Contains("[REDACTED]", StringComparison.Ordinal), "Diagnostic logs should redact secret-like fields.");
+            True(!contents.Contains("fixture-secret", StringComparison.Ordinal) && !contents.Contains("private phrase", StringComparison.Ordinal)
+                && !contents.Contains("BearerValue", StringComparison.Ordinal) && !contents.Contains("inline-secret", StringComparison.Ordinal),
+                "Secret values must not be persisted in service logs.");
+            True(contents.StartsWith(DateTime.UtcNow.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal),
+                "Persisted logs must be timestamped in UTC.");
+        }
+        finally { if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true); }
+        var databasePath = Path.Combine(Path.GetTempPath(), "sentinelcore-d2-store-blocked-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(databasePath);
+        try
+        {
+            await using var store = new SqliteEventStore(databasePath);
+            await ThrowsAsync<SqliteException>(() => store.InitializeAsync(),
+                "An unavailable SQLite target must fail explicitly instead of silently losing telemetry.");
+        }
+        finally { if (Directory.Exists(databasePath)) Directory.Delete(databasePath, recursive: true); }
+
+        if (OperatingSystem.IsWindows())
+        {
+            var identity = System.Security.Principal.WindowsIdentity.GetCurrent();
+            var principal = new System.Security.Principal.WindowsPrincipal(identity);
+            Console.WriteLine($"SECURITY|testProcessElevated={principal.IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator)}");
+        }
+    }
+
     private static async Task ValidateAndPublishEnvelope()
     {
         var testNow = DateTimeOffset.UtcNow;
@@ -113,6 +185,8 @@ internal static class Demon2Checks
         True(!InterDaemonEnvelopeValidator.TryValidate(badConfidence, testNow, out _), "Finding payload confidence outside 0..1 must be rejected.");
         var badRefs = envelope with { Payload = JsonSerializer.SerializeToElement(new { findingId = "f", ruleId = "r", ruleVersion = 1, severity = "high", confidence = .5, firstSeenUtc = Now, lastSeenUtc = Now, summary = "s", facts = Array.Empty<object>(), evidenceRefs = Array.Empty<string>(), missingTelemetry = Array.Empty<string>() }, new JsonSerializerOptions(JsonSerializerDefaults.Web)) };
         True(!InterDaemonEnvelopeValidator.TryValidate(badRefs, testNow, out _), "Finding with no evidence references must be rejected.");
+        var oversized = envelope with { Payload = JsonSerializer.SerializeToElement(new { findingId = "f", ruleId = "r", ruleVersion = 1, severity = "high", confidence = .5, firstSeenUtc = testNow, lastSeenUtc = testNow, summary = new string('x', 65_536), facts = Array.Empty<object>(), evidenceRefs = new[] { "e1" }, missingTelemetry = Array.Empty<string>() }, new JsonSerializerOptions(JsonSerializerDefaults.Web)) };
+        True(!InterDaemonEnvelopeValidator.TryValidate(oversized, testNow, out _), "Oversized message payloads must be rejected at the common envelope limit.");
         True(InterDaemonEnvelopeValidator.EvidenceRefsResolve(envelope, new HashSet<string> { "e1" }, out _), "Existing evidence references should resolve.");
         True(!InterDaemonEnvelopeValidator.EvidenceRefsResolve(envelope, new HashSet<string>(), out _), "Missing evidence references must be detected.");
         var heartbeat = InterDaemonEnvelopeFactory.Heartbeat("case-heartbeat",
@@ -632,6 +706,20 @@ internal static class Demon2Checks
         }
     }
 
+    private sealed class BlockingNormalizer(IEventNormalizer<SysmonRecord> inner) : IEventNormalizer<SysmonRecord>
+    {
+        private readonly TaskCompletionSource _entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly ManualResetEventSlim _release = new(false);
+        public Task Entered => _entered.Task;
+        public void Release() => _release.Set();
+        public bool TryNormalize(SysmonRecord input, out CanonicalEvent? result, out string? rejectionReason)
+        {
+            _entered.TrySetResult();
+            if (!_release.Wait(TimeSpan.FromSeconds(5))) throw new TimeoutException("Test normalizer was not released.");
+            return inner.TryNormalize(input, out result, out rejectionReason);
+        }
+    }
+
     private sealed class ReplaySysmonSource(IReadOnlyList<SysmonRecord> records) : IEventSource<SysmonRecord>, IEventSourceHealthProvider
     {
         public string Name => "Sysmon";
@@ -644,6 +732,21 @@ internal static class Demon2Checks
                 yield return record;
                 await Task.Yield();
             }
+        }
+    }
+
+    private sealed class PausingReplaySource(IReadOnlyList<SysmonRecord> records) : IEventSource<SysmonRecord>, IEventSourceHealthProvider
+    {
+        public string Name => "Sysmon";
+        public EventSourceHealth GetHealth() => new(TelemetryState.Available, 0, null, Now);
+        public async IAsyncEnumerable<SysmonRecord> ReadAllAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            foreach (var record in records)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                yield return record;
+            }
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
         }
     }
 
@@ -745,10 +848,16 @@ internal static class Demon2Checks
         var health = new TelemetryHealthMonitor(TimeSpan.FromSeconds(30));
         var absent = health.Evaluate("Sysmon", new EventSourceHealth(TelemetryState.Unavailable, 0, null, null), Now);
         True(absent is not null && absent.Source == "Sysmon", "Unavailable telemetry source must raise TELEMETRY_GAP.");
+        Equal(TelemetryState.Unavailable, TelemetryHealthMonitor.ClassifySourceState(false, null),
+            "A disconnected watcher must remain unavailable.");
+        Equal(TelemetryState.Degraded, TelemetryHealthMonitor.ClassifySourceState(true, "transient error"),
+            "An active watcher with an unresolved source error must remain degraded.");
+        Equal(TelemetryState.Available, TelemetryHealthMonitor.ClassifySourceState(true, null),
+            "A recovered watcher with no active error must become available.");
         var dropped = health.Evaluate("Sysmon", new EventSourceHealth(TelemetryState.Degraded, 4, null, Now), Now);
         Equal(4L, dropped!.DroppedCount, "Dropped event count must be preserved.");
-        True(health.Evaluate("Sysmon", new EventSourceHealth(TelemetryState.Available, 0, null, Now), Now) is null,
-            "A recovered, fresh source should return to healthy without implying missing events were observed.");
+        True(health.Evaluate("Sysmon", new EventSourceHealth(TelemetryState.Available, 4, null, Now), Now) is null,
+            "Historical dropped-count totals must not keep a recovered, fresh source degraded or re-emit the same loss.");
         True(health.Evaluate("Sysmon", new EventSourceHealth(TelemetryState.Available, 0, null, Now.AddMinutes(-2)), Now) is not null,
             "Stale telemetry must be reported rather than treated as evidence of no activity.");
 
@@ -779,7 +888,12 @@ internal static class Demon2Checks
             var source = new ReplaySysmonSource([
                 new(first, "cursor-901"), new(first, "cursor-901"), new(near, "cursor-902"),
                 new("<Event><broken", "poison-cursor"), new("<Event><broken", "poison-cursor"),
-                new("", null, "Simulated temporary Sysmon source outage"), new(afterBad, "cursor-903")
+                new("", null, "Simulated temporary Sysmon source outage"),
+                new("", null, "Simulated temporary Sysmon source outage"),
+                new(afterBad, "cursor-903"),
+                new("", null, "Simulated second Sysmon source outage"),
+                new("", null, "Simulated second Sysmon source outage"),
+                new(EventXml(11, 904, "TargetFilename", @"C:\Fixture\after-recovery.bin", ("ProcessId", "91")), "cursor-904")
             ]);
             var bus = new CaptureBus();
             await using var store = new SqliteEventStore(path, TimeSpan.FromDays(1));
@@ -787,13 +901,16 @@ internal static class Demon2Checks
                 new DetectionEngine(), bus, new FixedTimeProvider(Now)).RunAsync(CancellationToken.None);
 
             var events = await store.LoadRecentEventsAsync(DateTimeOffset.MinValue, 20);
-            Equal(3, events.Count, "A single malformed input must not interrupt following valid events; exact duplicates stay deduplicated.");
+            Equal(4, events.Count, "A single malformed input must not interrupt following valid events; exact duplicates stay deduplicated.");
             True(events.Any(x => x.SourceEventId == "902"), "A nearby event with a distinct telemetry ID must remain distinct.");
-            Equal("cursor-903", await store.LoadCursorAsync("Sysmon"), "The cursor must advance after a controlled poison-record rejection.");
+            Equal("cursor-904", await store.LoadCursorAsync("Sysmon"), "The cursor must advance after a controlled poison-record rejection.");
             var gaps = await store.LoadTelemetryGapsAsync();
-            Equal(2, gaps.Count, "Malformed observed input and source outage must be reported as separate gaps.");
+            Equal(3, gaps.Count, "A malformed record and two distinct outage episodes must each produce one gap.");
             True(gaps.Any(x => x.MissingFields.Contains("normalizedEvent")), "Malformed observed input must identify normalization as unavailable.");
-            True(gaps.Any(x => x.MissingFields.Contains("source_available")), "Source outage must remain distinct from malformed input.");
+            var outageGaps = gaps.Where(x => x.MissingFields.Contains("source_available")).ToArray();
+            Equal(2, outageGaps.Length, "Repeated errors during one outage must not multiply gaps, while a later outage is separately reported.");
+            Equal(2, outageGaps.Select(x => x.GapId).Distinct(StringComparer.Ordinal).Count(),
+                "Separate outage episodes must retain distinct gap identities.");
             True(!gaps.Any(x => x.DroppedCount > 0), "A rejected malformed event is not a confirmed collector drop.");
         }
         finally
@@ -803,6 +920,140 @@ internal static class Demon2Checks
             if (File.Exists(path + "-wal")) File.Delete(path + "-wal");
             if (File.Exists(path + "-shm")) File.Delete(path + "-shm");
         }
+    }
+
+    private static async Task ContinuousPipelineLifecycle()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "sentinelcore-d2-lifecycle-" + Guid.NewGuid().ToString("N") + ".sqlite");
+        try
+        {
+            await using var store = new SqliteEventStore(path, TimeSpan.FromDays(1));
+            var interruptedRecord = new SysmonRecord(
+                EventXml(11, 950, "TargetFilename", @"C:\Fixture\interrupted.bin", ("ProcessId", "950")), "lifecycle-950");
+            var blockingNormalizer = new BlockingNormalizer(new SysmonEventNormalizer());
+            var interruptedSource = new ReplaySysmonSource([interruptedRecord]);
+            using (var stopDuringWork = new CancellationTokenSource())
+            {
+                var interruptedRun = Task.Run(() => new ThreatMonitorPipeline(interruptedSource, interruptedSource,
+                    blockingNormalizer, store, new DetectionEngine(), new CaptureBus()).RunAsync(stopDuringWork.Token));
+                await blockingNormalizer.Entered.WaitAsync(TimeSpan.FromSeconds(5));
+                stopDuringWork.Cancel();
+                blockingNormalizer.Release();
+                await ThrowsCanceledAsync(interruptedRun, "Stopping during event normalization must cancel the in-flight operation cleanly.");
+            }
+            True(!(await store.LoadRecentEventsAsync(DateTimeOffset.MinValue, 10)).Any(x => x.SourceEventId == "950"),
+                "An interrupted event must not be partially committed.");
+            True(await store.LoadCursorAsync("Sysmon") is null,
+                "An interrupted event must leave the prior bookmark intact so the source can replay it after restart.");
+
+            var first = EventXml(11, 951, "TargetFilename", @"C:\Fixture\lifecycle-first.bin", ("ProcessId", "951"));
+            var continuous = new PausingReplaySource([new SysmonRecord(first, "lifecycle-951")]);
+            using var stop = new CancellationTokenSource();
+            var run = Task.Run(() => new ThreatMonitorPipeline(continuous, continuous, new SysmonEventNormalizer(), store,
+                new DetectionEngine(), new CaptureBus()).RunAsync(stop.Token));
+
+            var firstSeen = false;
+            for (var attempt = 0; attempt < 200; attempt++)
+            {
+                if ((await store.LoadRecentEventsAsync(DateTimeOffset.MinValue, 10)).Any(x => x.SourceEventId == "951"))
+                {
+                    firstSeen = true;
+                    break;
+                }
+                await Task.Delay(10);
+            }
+            True(firstSeen, "Continuous pipeline must start and persist telemetry while its source remains open.");
+            stop.Cancel();
+            True(await Task.WhenAny(run, Task.Delay(TimeSpan.FromSeconds(5))) == run,
+                "Cancellation must stop an idle continuous pipeline promptly.");
+            await ThrowsCanceledAsync(run, "Expected cancellation to stop the first service run cleanly.");
+            Equal("lifecycle-951", await store.LoadCursorAsync("Sysmon"),
+                "A committed bookmark must survive a controlled service stop.");
+
+            var resumed = new ReplaySysmonSource([
+                new(first, "lifecycle-951"),
+                new(EventXml(11, 952, "TargetFilename", @"C:\Fixture\lifecycle-second.bin", ("ProcessId", "952")), "lifecycle-952")
+            ]);
+            await new ThreatMonitorPipeline(resumed, resumed, new SysmonEventNormalizer(), store,
+                new DetectionEngine(), new CaptureBus(), new FixedTimeProvider(Now)).RunAsync(CancellationToken.None);
+            var events = await store.LoadRecentEventsAsync(DateTimeOffset.MinValue, 10);
+            Equal(2, events.Count, "Restart must ignore already committed telemetry and process the next event once.");
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (File.Exists(path)) File.Delete(path);
+            if (File.Exists(path + "-wal")) File.Delete(path + "-wal");
+            if (File.Exists(path + "-shm")) File.Delete(path + "-shm");
+        }
+    }
+
+    private static async Task SustainedLoadPerformance()
+    {
+        const int validCount = 256;
+        var path = Path.Combine(Path.GetTempPath(), "sentinelcore-d2-perf-" + Guid.NewGuid().ToString("N") + ".sqlite");
+        try
+        {
+            var records = Enumerable.Range(0, validCount)
+                .Select(i => new SysmonRecord(EventXml(11, 3000 + i, "TargetFilename", $@"C:\Perf\event-{i:D4}.bin", ("ProcessId", (3000 + i).ToString())), $"perf-{i:D4}"))
+                .Append(new SysmonRecord("<Event><malformed", "perf-invalid"))
+                .ToArray();
+            var source = new ReplaySysmonSource(records);
+            var normalizer = new RecordingNormalizer(new SysmonEventNormalizer());
+            await using var store = new SqliteEventStore(path, TimeSpan.FromDays(1));
+            using var process = System.Diagnostics.Process.GetCurrentProcess();
+            process.Refresh();
+            var cpuBefore = process.TotalProcessorTime;
+            var memoryBefore = GC.GetTotalMemory(true);
+            var workingSetBefore = process.WorkingSet64;
+            var allocatedBefore = GC.GetTotalAllocatedBytes(true);
+            var timer = System.Diagnostics.Stopwatch.StartNew();
+            await new ThreatMonitorPipeline(source, source, normalizer, store, new DetectionEngine(), new CaptureBus())
+                .RunAsync(CancellationToken.None);
+            timer.Stop();
+            process.Refresh();
+
+            var events = await store.LoadRecentEventsAsync(DateTimeOffset.MinValue, validCount + 1);
+            var findings = await store.LoadFindingsAsync();
+            var rejected = normalizer.Rejections.Count;
+            var dropped = source.GetHealth().DroppedCount;
+            var cpu = process.TotalProcessorTime - cpuBefore;
+            var managedDelta = GC.GetTotalMemory(false) - memoryBefore;
+            var workingSetDelta = process.WorkingSet64 - workingSetBefore;
+            var allocated = GC.GetTotalAllocatedBytes(false) - allocatedBefore;
+            var meanMicros = timer.Elapsed.TotalMilliseconds * 1000 / validCount;
+            var cpuPercent = timer.Elapsed.TotalMilliseconds == 0 ? 0 : cpu.TotalMilliseconds / timer.Elapsed.TotalMilliseconds * 100;
+            var queueDepth = source.GetHealth().QueueDepth;
+            var throughput = timer.Elapsed.TotalSeconds == 0 ? 0 : events.Count / timer.Elapsed.TotalSeconds;
+            var stageTimer = System.Diagnostics.Stopwatch.StartNew();
+            var last = events.OrderBy(x => x.TimestampUtc).ThenBy(x => x.EventId, StringComparer.Ordinal).Last();
+            var related = await new TemporalCorrelator(store).GetRelatedEventsAsync(last);
+            stageTimer.Stop();
+            var correlationMs = stageTimer.Elapsed.TotalMilliseconds;
+            stageTimer.Restart();
+            var detectionResult = new DetectionEngine().Evaluate(last, related, DateTimeOffset.UtcNow);
+            stageTimer.Stop();
+            var detectionMicros = stageTimer.Elapsed.TotalMilliseconds * 1000;
+            Console.WriteLine($"PERF|events={events.Count}|rejected={rejected}|queueDepth={queueDepth}|dropped={dropped}|findings={findings.Count}|throughputEventsPerSec={throughput:F2}|elapsedMs={timer.Elapsed.TotalMilliseconds:F2}|meanPipelineMicros={meanMicros:F2}|correlationMs={correlationMs:F2}|detectionMicros={detectionMicros:F2}|cpuPercent={cpuPercent:F2}|managedDeltaBytes={managedDelta}|workingSetDeltaBytes={workingSetDelta}|allocatedBytes={allocated}");
+            Equal(validCount, events.Count, "Sustained replay must process all valid input records.");
+            Equal(1, rejected, "Sustained replay must isolate its one malformed event.");
+            Equal(0L, dropped, "The bounded fixture source must report no dropped events.");
+            Equal(0, findings.Count, "Distinct ordinary file writes must not invent threat findings.");
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (File.Exists(path)) File.Delete(path);
+            if (File.Exists(path + "-wal")) File.Delete(path + "-wal");
+            if (File.Exists(path + "-shm")) File.Delete(path + "-shm");
+        }
+    }
+
+    private static async Task ThrowsCanceledAsync(Task task, string message)
+    {
+        try { await task; }
+        catch (OperationCanceledException) { return; }
+        throw new InvalidOperationException(message);
     }
 
     private static async Task<List<CanonicalEvent>> LoadCase(string id)

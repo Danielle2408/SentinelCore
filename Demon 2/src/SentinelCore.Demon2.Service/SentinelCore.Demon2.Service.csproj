@@ -6,6 +6,7 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="SentinelCore.Demon2.Tests" />
     <ProjectReference Include="..\SentinelCore.Demon2.Core\SentinelCore.Demon2.Core.csproj" />
     <PackageReference Include="System.Diagnostics.EventLog" Version="8.0.1" />
   </ItemGroup>

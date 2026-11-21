@@ -39,8 +39,14 @@ internal static class WindowsServiceDispatcher
         var error = Marshal.GetLastWin32Error();
         if (error != ErrorFailedServiceControllerConnect) throw new Win32Exception(error);
         using var cts = new CancellationTokenSource();
-        Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
-        worker(cts.Token).GetAwaiter().GetResult();
+        ConsoleCancelEventHandler cancelHandler = (_, e) => { e.Cancel = true; cts.Cancel(); };
+        Console.CancelKeyPress += cancelHandler;
+        try
+        {
+            try { worker(cts.Token).GetAwaiter().GetResult(); }
+            catch (OperationCanceledException) when (cts.IsCancellationRequested) { }
+        }
+        finally { Console.CancelKeyPress -= cancelHandler; }
     }
 
     private static void ServiceMain(uint argc, IntPtr argv)
