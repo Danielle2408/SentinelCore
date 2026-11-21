@@ -45,7 +45,10 @@ public sealed class SysmonEventSource(string? bookmarkXml = null) : IEventSource
 
     public EventSourceHealth GetHealth()
     {
-        var state = _error is not null ? TelemetryState.Degraded : _watcher?.Enabled == true ? TelemetryState.Available : TelemetryState.Unavailable;
+        var watching = _watcher?.Enabled == true;
+        var state = !watching ? TelemetryState.Unavailable
+            : _error is not null || Interlocked.Read(ref _dropped) > 0 ? TelemetryState.Degraded
+            : TelemetryState.Available;
         return new(state, Interlocked.Read(ref _dropped), _error, _lastEventUtc, Volatile.Read(ref _queueDepth), _startedAtUtc);
     }
 
@@ -97,14 +100,23 @@ public sealed class SysmonEventSource(string? bookmarkXml = null) : IEventSource
         if (e.EventRecord is not { } record) return;
         using (record)
         {
-            var entry = new SysmonRecord(record.ToXml(), record.Bookmark?.BookmarkXml);
-            Interlocked.Increment(ref _queueDepth);
-            if (_records.Writer.TryWrite(entry))
+            try
             {
-                _lastEventUtc = DateTimeOffset.UtcNow;
-                _error = null;
+                var entry = new SysmonRecord(record.ToXml(), record.Bookmark?.BookmarkXml);
+                Interlocked.Increment(ref _queueDepth);
+                if (_records.Writer.TryWrite(entry))
+                {
+                    _lastEventUtc = DateTimeOffset.UtcNow;
+                    if (_watcher?.Enabled == true) _error = null;
+                }
+                else { Interlocked.Decrement(ref _queueDepth); Interlocked.Increment(ref _dropped); }
             }
-            else { Interlocked.Decrement(ref _queueDepth); Interlocked.Increment(ref _dropped); }
+            catch (Exception ex)
+            {
+                Interlocked.Increment(ref _dropped);
+                _error = $"Sysmon event could not be read: {ex.Message}";
+                QueueSourceError(_error);
+            }
         }
     }
 
@@ -114,7 +126,6 @@ public sealed class SysmonEventSource(string? bookmarkXml = null) : IEventSource
         if (!_records.Writer.TryWrite(new SysmonRecord("", null, message)))
         {
             Interlocked.Decrement(ref _queueDepth);
-            Interlocked.Increment(ref _dropped);
         }
     }
 

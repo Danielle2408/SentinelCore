@@ -6,6 +6,7 @@ using Microsoft.Data.Sqlite;
 using SentinelCore.Demon2.Core;
 using SentinelCore.Demon2.Service;
 
+Console.OutputEncoding = new System.Text.UTF8Encoding(false);
 return await Demon2Checks.RunAsync();
 
 internal static class Demon2Checks
@@ -27,6 +28,7 @@ internal static class Demon2Checks
             await Check("Reference database integrity and replay", ReplayReferenceDatabase);
             await Check("Benign and suspicious chains", EvaluateRules);
             await Check("Telemetry gaps and bounded health", EvaluateTelemetryGaps);
+            await Check("Pipeline resilience, malformed input, and recovery", PipelineResilience);
             Console.WriteLine($"Demon 2 checks passed: {_passed}.");
             return 0;
         }
@@ -97,27 +99,28 @@ internal static class Demon2Checks
 
     private static async Task ValidateAndPublishEnvelope()
     {
-        var finding = MakeFinding("rule", ["e1"]);
-        var envelope = InterDaemonEnvelopeFactory.ForFinding(finding, Now);
-        True(InterDaemonEnvelopeValidator.TryValidate(envelope, Now, out _), "Valid v1 finding envelope should pass.");
-        var expired = envelope with { ExpiresAtUtc = Now.AddSeconds(-1) };
-        True(!InterDaemonEnvelopeValidator.TryValidate(expired, Now, out _), "Expired messages must be rejected.");
+        var testNow = DateTimeOffset.UtcNow;
+        var finding = MakeFinding("rule", ["e1"]) with { FirstSeenUtc = testNow, LastSeenUtc = testNow, ExpiresAtUtc = testNow.AddMinutes(1) };
+        var envelope = InterDaemonEnvelopeFactory.ForFinding(finding, testNow);
+        True(InterDaemonEnvelopeValidator.TryValidate(envelope, testNow, out _), "Valid v1 finding envelope should pass.");
+        var expired = envelope with { ExpiresAtUtc = testNow.AddSeconds(-1) };
+        True(!InterDaemonEnvelopeValidator.TryValidate(expired, testNow, out _), "Expired messages must be rejected.");
         var action = envelope with { MessageType = "ACTION_REQUEST" };
-        True(!InterDaemonEnvelopeValidator.TryValidate(action, Now, out _), "D2 must reject action messages.");
-        True(!InterDaemonEnvelopeValidator.TryValidate(envelope with { TimestampUtc = Now.ToOffset(TimeSpan.FromHours(1)) }, Now, out _), "Envelope timestamps with a non-UTC offset must be rejected.");
-        True(!InterDaemonEnvelopeValidator.TryValidate(envelope with { MessageId = Guid.Empty }, Now, out _), "Empty message ids must be rejected.");
+        True(!InterDaemonEnvelopeValidator.TryValidate(action, testNow, out _), "D2 must reject action messages.");
+        True(!InterDaemonEnvelopeValidator.TryValidate(envelope with { TimestampUtc = testNow.ToOffset(TimeSpan.FromHours(1)) }, testNow, out _), "Envelope timestamps with a non-UTC offset must be rejected.");
+        True(!InterDaemonEnvelopeValidator.TryValidate(envelope with { MessageId = Guid.Empty }, testNow, out _), "Empty message ids must be rejected.");
         var badConfidence = envelope with { Payload = JsonSerializer.SerializeToElement(new { findingId = "f", ruleId = "r", ruleVersion = 1, severity = "high", confidence = 2, firstSeenUtc = Now, lastSeenUtc = Now, summary = "s", facts = Array.Empty<object>(), evidenceRefs = new[] { "e1" }, missingTelemetry = Array.Empty<string>() }, new JsonSerializerOptions(JsonSerializerDefaults.Web)) };
-        True(!InterDaemonEnvelopeValidator.TryValidate(badConfidence, Now, out _), "Finding payload confidence outside 0..1 must be rejected.");
+        True(!InterDaemonEnvelopeValidator.TryValidate(badConfidence, testNow, out _), "Finding payload confidence outside 0..1 must be rejected.");
         var badRefs = envelope with { Payload = JsonSerializer.SerializeToElement(new { findingId = "f", ruleId = "r", ruleVersion = 1, severity = "high", confidence = .5, firstSeenUtc = Now, lastSeenUtc = Now, summary = "s", facts = Array.Empty<object>(), evidenceRefs = Array.Empty<string>(), missingTelemetry = Array.Empty<string>() }, new JsonSerializerOptions(JsonSerializerDefaults.Web)) };
-        True(!InterDaemonEnvelopeValidator.TryValidate(badRefs, Now, out _), "Finding with no evidence references must be rejected.");
+        True(!InterDaemonEnvelopeValidator.TryValidate(badRefs, testNow, out _), "Finding with no evidence references must be rejected.");
         True(InterDaemonEnvelopeValidator.EvidenceRefsResolve(envelope, new HashSet<string> { "e1" }, out _), "Existing evidence references should resolve.");
         True(!InterDaemonEnvelopeValidator.EvidenceRefsResolve(envelope, new HashSet<string>(), out _), "Missing evidence references must be detected.");
         var heartbeat = InterDaemonEnvelopeFactory.Heartbeat("case-heartbeat",
-            new EventSourceHealth(TelemetryState.Available, 2, null, Now, QueueDepth: 17), 5, Now);
+            new EventSourceHealth(TelemetryState.Available, 2, null, testNow, QueueDepth: 17), 5, testNow);
         Equal(17, heartbeat.Payload.GetProperty("queueDepth").GetInt32(), "Heartbeat must report the actual collector queue depth.");
         Equal(5, heartbeat.Payload.GetProperty("outboxDepth").GetInt32(), "Heartbeat must report the actual durable outbox depth.");
-        _ = InterDaemonEnvelopeFactory.ForSessionContextRequest("case-1", ["sessionState", "localOrRemote"], Now.AddSeconds(2));
-        Throws<ArgumentException>(() => InterDaemonEnvelopeFactory.ForSessionContextRequest("case-1", ["userName"], Now.AddSeconds(2)),
+        _ = InterDaemonEnvelopeFactory.ForSessionContextRequest("case-1", ["sessionState", "localOrRemote"], testNow.AddSeconds(2));
+        Throws<ArgumentException>(() => InterDaemonEnvelopeFactory.ForSessionContextRequest("case-1", ["userName"], testNow.AddSeconds(2)),
             "Session context requests must follow the common allowlist.");
 
         var path = Path.Combine(Path.GetTempPath(), "sentinelcore-d2-" + Guid.NewGuid().ToString("N") + ".jsonl");
@@ -233,6 +236,7 @@ internal static class Demon2Checks
 
     private static async Task PersistentNamedPipeSession()
     {
+        var testNow = DateTimeOffset.UtcNow;
         var pipeName = "SentinelCore.Guard.Tests." + Guid.NewGuid().ToString("N");
         await using var server = new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
         var serverTask = Task.Run(async () =>
@@ -258,7 +262,7 @@ internal static class Demon2Checks
         await using var bus = new NamedPipeInterDaemonBus(pipeName);
         for (var i = 0; i < 2; i++)
             await bus.PublishAsync(InterDaemonEnvelopeFactory.Heartbeat("pipe-test-" + i,
-                new EventSourceHealth(TelemetryState.Available, 0, null, Now, QueueDepth: i + 1), 0, Now));
+                new EventSourceHealth(TelemetryState.Available, 0, null, testNow, QueueDepth: i + 1), 0, testNow));
         await serverTask.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
@@ -533,20 +537,20 @@ internal static class Demon2Checks
     private static string FixtureEventXml(string scenarioId, string sourceEventId, int recordId, DateTimeOffset timestamp,
         string sourceType, string? process, string? parent, string? objectPath, string? remote, string description)
     {
-        var text = $"{process} {description}";
+        var text = StripDiacritics($"{process} {description}");
         int eventId;
         if (sourceType == "NETWORK_ACTIVITY")
-            eventId = ContainsAny(text, "dns", "requêtes", "requete") ? 22 : 3;
+            eventId = ContainsAny(text, "dns", "requetes") ? 22 : 3;
         else if (text.Contains("image load", StringComparison.OrdinalIgnoreCase)) eventId = 7;
         else if (text.Contains("processaccess", StringComparison.OrdinalIgnoreCase)) eventId = 10;
-        else if (text.Contains("altération de configuration", StringComparison.OrdinalIgnoreCase)) eventId = 16;
+        else if (text.Contains("alteration de configuration", StringComparison.OrdinalIgnoreCase)) eventId = 16;
         else if (FixtureEventType(sourceType, process, description) == ThreatEventType.DOWNLOAD_OBSERVED) eventId = 15;
         else if (sourceType == "PROCESS_ACTIVITY") eventId = 1;
         else if (text.Contains("persistance", StringComparison.OrdinalIgnoreCase) || text.Contains("registre", StringComparison.OrdinalIgnoreCase) ||
-            text.Contains("tâche", StringComparison.OrdinalIgnoreCase) || text.Contains("startup", StringComparison.OrdinalIgnoreCase)) eventId = 13;
+            text.Contains("tache", StringComparison.OrdinalIgnoreCase) || text.Contains("startup", StringComparison.OrdinalIgnoreCase)) eventId = 13;
         else if (FixtureEventType(sourceType, process, description) == ThreatEventType.SCRIPT_ACTIVITY ||
-            text.Contains("lancement", StringComparison.OrdinalIgnoreCase) || text.Contains("exécution", StringComparison.OrdinalIgnoreCase) ||
-            text.Contains("événement process", StringComparison.OrdinalIgnoreCase)) eventId = 1;
+            text.Contains("lancement", StringComparison.OrdinalIgnoreCase) || text.Contains("execution", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("evenement process", StringComparison.OrdinalIgnoreCase)) eventId = 1;
         else eventId = 11;
 
         var processName = process ?? "unknown";
@@ -568,7 +572,7 @@ internal static class Demon2Checks
         {
             fields.AddRange([("ProcessId", processPid?.ToString()), ("ProcessGuid", processGuid), ("Image", Image(processName, eventType == ThreatEventType.SCRIPT_ACTIVITY)),
                 ("ParentProcessId", parentPid?.ToString()), ("ParentProcessGuid", parentGuid), ("ParentImage", parent is null ? null : Image(parent)),
-                ("Signed", text.Contains("non signé", StringComparison.OrdinalIgnoreCase) ? "false" : "true")]);
+                ("Signed", text.Contains("non signe", StringComparison.OrdinalIgnoreCase) ? "false" : "true")]);
         }
         else if (eventId == 3)
         {
@@ -586,7 +590,7 @@ internal static class Demon2Checks
         }
         else if (eventId == 13)
         {
-            var target = text.Contains("task", StringComparison.OrdinalIgnoreCase) || text.Contains("tâche", StringComparison.OrdinalIgnoreCase)
+            var target = text.Contains("task", StringComparison.OrdinalIgnoreCase) || text.Contains("tache", StringComparison.OrdinalIgnoreCase)
                 ? @"\REGISTRY\MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tree\Fixture"
                 : @"\REGISTRY\MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Run\Fixture";
             fields.AddRange([("ProcessId", processPid?.ToString()), ("ProcessGuid", processGuid), ("Image", Image(processName)), ("TargetObject", target)]);
@@ -743,6 +747,62 @@ internal static class Demon2Checks
         True(absent is not null && absent.Source == "Sysmon", "Unavailable telemetry source must raise TELEMETRY_GAP.");
         var dropped = health.Evaluate("Sysmon", new EventSourceHealth(TelemetryState.Degraded, 4, null, Now), Now);
         Equal(4L, dropped!.DroppedCount, "Dropped event count must be preserved.");
+        True(health.Evaluate("Sysmon", new EventSourceHealth(TelemetryState.Available, 0, null, Now), Now) is null,
+            "A recovered, fresh source should return to healthy without implying missing events were observed.");
+        True(health.Evaluate("Sysmon", new EventSourceHealth(TelemetryState.Available, 0, null, Now.AddMinutes(-2)), Now) is not null,
+            "Stale telemetry must be reported rather than treated as evidence of no activity.");
+
+        var download = MakeEvent("partial-download", ThreatEventType.DOWNLOAD_OBSERVED, Now, processId: 72);
+        var execution = MakeEvent("partial-execution", ThreatEventType.PROCESS_STARTED, Now.AddSeconds(1), processId: 72);
+        var script = MakeEvent("partial-script", ThreatEventType.SCRIPT_ACTIVITY, Now.AddSeconds(2), processId: 72,
+            fields: new Dictionary<string, string> { ["fixtureDescription"] = "capteur réseau indisponible" });
+        var partial = new DetectionEngine().Evaluate(script, [download, execution, script], Now.AddSeconds(3));
+        var partialFinding = partial.Findings.Single(x => x.RuleId == "download_chain");
+        True(partialFinding.EvidenceRefs.Contains(download.EventId) && partialFinding.EvidenceRefs.Contains(execution.EventId) &&
+            partialFinding.EvidenceRefs.Contains(script.EventId), "Partial correlation must preserve each actually observed stage.");
+        True(partialFinding.MissingTelemetry.Contains("networkSensor") &&
+            !partialFinding.EvidenceRefs.Any(id => id.StartsWith("invented-network", StringComparison.Ordinal)),
+            "A known missing network sensor must leave the chain explicitly partial without inventing network evidence.");
+    }
+
+    private static async Task PipelineResilience()
+    {
+        Equal(FixtureEventType("FILE_OR_SYSTEM_ACTIVITY", null, "téléchargement marqué internet"),
+            FixtureEventType("FILE_OR_SYSTEM_ACTIVITY", null, "tÃ©lÃ©chargement marquÃ© internet"),
+            "Fixture event classification must survive common UTF-8-as-Latin-1 mojibake.");
+        var path = Path.Combine(Path.GetTempPath(), "sentinelcore-d2-resilience-" + Guid.NewGuid().ToString("N") + ".sqlite");
+        try
+        {
+            var first = EventXml(11, 901, "TargetFilename", @"C:\Fixture\first.bin", ("ProcessId", "91"));
+            var near = EventXml(11, 902, "TargetFilename", @"C:\Fixture\near.bin", ("ProcessId", "91"));
+            var afterBad = EventXml(11, 903, "TargetFilename", @"C:\Fixture\after-bad.bin", ("ProcessId", "91"));
+            var source = new ReplaySysmonSource([
+                new(first, "cursor-901"), new(first, "cursor-901"), new(near, "cursor-902"),
+                new("<Event><broken", "poison-cursor"), new("<Event><broken", "poison-cursor"),
+                new("", null, "Simulated temporary Sysmon source outage"), new(afterBad, "cursor-903")
+            ]);
+            var bus = new CaptureBus();
+            await using var store = new SqliteEventStore(path, TimeSpan.FromDays(1));
+            await new ThreatMonitorPipeline(source, source, new SysmonEventNormalizer(), store,
+                new DetectionEngine(), bus, new FixedTimeProvider(Now)).RunAsync(CancellationToken.None);
+
+            var events = await store.LoadRecentEventsAsync(DateTimeOffset.MinValue, 20);
+            Equal(3, events.Count, "A single malformed input must not interrupt following valid events; exact duplicates stay deduplicated.");
+            True(events.Any(x => x.SourceEventId == "902"), "A nearby event with a distinct telemetry ID must remain distinct.");
+            Equal("cursor-903", await store.LoadCursorAsync("Sysmon"), "The cursor must advance after a controlled poison-record rejection.");
+            var gaps = await store.LoadTelemetryGapsAsync();
+            Equal(2, gaps.Count, "Malformed observed input and source outage must be reported as separate gaps.");
+            True(gaps.Any(x => x.MissingFields.Contains("normalizedEvent")), "Malformed observed input must identify normalization as unavailable.");
+            True(gaps.Any(x => x.MissingFields.Contains("source_available")), "Source outage must remain distinct from malformed input.");
+            True(!gaps.Any(x => x.DroppedCount > 0), "A rejected malformed event is not a confirmed collector drop.");
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (File.Exists(path)) File.Delete(path);
+            if (File.Exists(path + "-wal")) File.Delete(path + "-wal");
+            if (File.Exists(path + "-shm")) File.Delete(path + "-shm");
+        }
     }
 
     private static async Task<List<CanonicalEvent>> LoadCase(string id)
@@ -784,18 +844,32 @@ internal static class Demon2Checks
 
     private static ThreatEventType FixtureEventType(string sourceType, string? process, string? description)
     {
-        var text = $"{process} {description}";
-        if (sourceType == "NETWORK_ACTIVITY" || (description?.Contains("envoie flux", StringComparison.OrdinalIgnoreCase) ?? false)) return ThreatEventType.NETWORK_CONNECTION;
+        var text = StripDiacritics($"{process} {description}");
+        var kind = sourceType.Trim().ToUpperInvariant();
+        if (kind == "NETWORK_ACTIVITY" || text.Contains("envoie flux", StringComparison.OrdinalIgnoreCase)) return ThreatEventType.NETWORK_CONNECTION;
         if (text.Contains("persistance", StringComparison.OrdinalIgnoreCase) || text.Contains("registre", StringComparison.OrdinalIgnoreCase) ||
-            text.Contains("tâche fixture", StringComparison.OrdinalIgnoreCase) || text.Contains("tâche planifiée", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("tache fixture", StringComparison.OrdinalIgnoreCase) || text.Contains("tache planifiee", StringComparison.OrdinalIgnoreCase) ||
             text.Contains("startup", StringComparison.OrdinalIgnoreCase)) return ThreatEventType.PERSISTENCE_CHANGE;
-        if (text.Contains("téléchargement", StringComparison.OrdinalIgnoreCase) || text.Contains("marqué internet", StringComparison.OrdinalIgnoreCase))
+        if (text.Contains("telechargement", StringComparison.OrdinalIgnoreCase) || text.Contains("marque internet", StringComparison.OrdinalIgnoreCase))
             return ThreatEventType.DOWNLOAD_OBSERVED;
         if (text.Contains("powershell", StringComparison.OrdinalIgnoreCase) || text.Contains("script-host", StringComparison.OrdinalIgnoreCase) ||
-            text.Contains("script host", StringComparison.OrdinalIgnoreCase) || text.Contains("interpréteur", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("script host", StringComparison.OrdinalIgnoreCase) || text.Contains("interpreteur", StringComparison.OrdinalIgnoreCase) ||
             text.Contains("shell", StringComparison.OrdinalIgnoreCase) || text.Contains("script dans", StringComparison.OrdinalIgnoreCase))
             return ThreatEventType.SCRIPT_ACTIVITY;
-        return sourceType == "PROCESS_ACTIVITY" ? ThreatEventType.PROCESS_STARTED : ThreatEventType.FILE_CREATED_OR_CHANGED;
+        return kind == "PROCESS_ACTIVITY" ? ThreatEventType.PROCESS_STARTED : ThreatEventType.FILE_CREATED_OR_CHANGED;
+    }
+
+    private static string StripDiacritics(string value)
+    {
+        if (value.Contains('Ã') || value.Contains('Â') || value.Contains("â€", StringComparison.Ordinal))
+        {
+            var repaired = System.Text.Encoding.UTF8.GetString(System.Text.Encoding.Latin1.GetBytes(value));
+            if (!repaired.Contains('\uFFFD') && repaired.Count(c => c is 'Ã' or 'Â') < value.Count(c => c is 'Ã' or 'Â'))
+                value = repaired;
+        }
+        var decomposed = value.Normalize(System.Text.NormalizationForm.FormD);
+        return string.Concat(decomposed.Where(c => System.Globalization.CharUnicodeInfo.GetUnicodeCategory(c) !=
+            System.Globalization.UnicodeCategory.NonSpacingMark)).Normalize(System.Text.NormalizationForm.FormC);
     }
 
     private static int StablePid(string scenario, string process)

@@ -32,9 +32,31 @@ public sealed class ThreatMonitorPipeline(
                     await PublishGapAsync(gap, Clock.GetUtcNow().AddMinutes(1), token);
                     continue;
                 }
-                if (!normalizer.TryNormalize(raw, out var item, out var rejected) || item is null)
+                CanonicalEvent? item;
+                string? rejected;
+                bool normalized;
+                try { normalized = normalizer.TryNormalize(raw, out item, out rejected); }
+                catch (Exception ex)
+                {
+                    item = null;
+                    rejected = $"Normalizer failed: {ex.Message}";
+                    normalized = false;
+                }
+                if (!normalized || item is null)
                 {
                     Console.Error.WriteLine($"Sysmon event rejected: {rejected}");
+                    var poisonIdentity = raw.BookmarkXml ?? Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                        System.Text.Encoding.UTF8.GetBytes(raw.Xml))).ToLowerInvariant();
+                    var gapId = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                        System.Text.Encoding.UTF8.GetBytes($"{source.Name}|malformed|{poisonIdentity}"))).ToLowerInvariant();
+                    await PublishGapAsync(new TelemetryGap(gapId, source.Name, Clock.GetUtcNow(),
+                        $"Observed source record was rejected during normalization: {rejected ?? "unknown validation error"}", 0, ["normalizedEvent"]),
+                        Clock.GetUtcNow().AddMinutes(1), token);
+                    if (raw.BookmarkXml is { Length: > 0 } rejectedCursor)
+                    {
+                        await store.SaveCursorAsync(source.Name, rejectedCursor, token);
+                        if (source is IEventCursorSource rejectedCursorSource) rejectedCursorSource.CommitCursor(rejectedCursor);
+                    }
                     continue;
                 }
                 var isNew = await store.SaveEventAsync(item, token);
@@ -154,7 +176,7 @@ public sealed class ThreatMonitorPipeline(
 
     private async ValueTask PublishGapAsync(TelemetryGap gap, DateTimeOffset expiresAtUtc, CancellationToken ct)
     {
-        await store.SaveTelemetryGapAsync(gap, ct);
+        if (!await store.SaveTelemetryGapAsync(gap, ct)) return;
         await EnqueueAsync(InterDaemonEnvelopeFactory.ForGap(gap, expiresAtUtc), ct);
     }
 }
