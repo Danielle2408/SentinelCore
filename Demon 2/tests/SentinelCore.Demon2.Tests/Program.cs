@@ -77,6 +77,21 @@ internal static class Demon2Checks
         var dns = EventXml(22, 107, "QueryName", "updates.example", ("ProcessId", "41"));
         True(normalizer.TryNormalize(new(dns, null), out var dnsEvent, out _), "Sysmon DNS query should normalize.");
         Equal(ThreatEventType.DOMAIN_QUERY, dnsEvent!.EventType, "DNS query must not be misrepresented as a connection or reputation verdict.");
+        var loadedPath = @"C:\Users\Public\Temp\unsigned-module.dll";
+        var imageLoad = EventXml(7, 115, "ImageLoaded", loadedPath, ("Image", @"C:\Program Files\Fixture\host.exe"),
+            ("ProcessId", "41"), ("Signed", "false"));
+        True(normalizer.TryNormalize(new(imageLoad, null), out var imageLoadEvent, out _), "Sysmon image-load event should normalize.");
+        Equal(ThreatEventType.IMAGE_LOAD, imageLoadEvent!.EventType, "Sysmon event 7 should remain an image-load event.");
+        Equal(loadedPath, imageLoadEvent.TargetPath, "The loaded module path must be mapped from ImageLoaded for rule evaluation.");
+        var processAccess = EventXml(10, 117, "SourceImage", @"C:\Tools\observer.exe", ("SourceProcessId", "0x75"),
+            ("TargetImage", @"C:\Windows\System32\lsass.exe"), ("GrantedAccess", "0x1010"));
+        True(normalizer.TryNormalize(new(processAccess, null), out var processAccessEvent, out _), "Sysmon process-access event should normalize.");
+        Equal(ThreatEventType.PROCESS_ACCESS, processAccessEvent!.EventType, "Sysmon event 10 should remain process-access evidence.");
+        Equal(117, processAccessEvent.ProcessId, "Source process identity must be retained for access correlation.");
+        Equal(@"C:\Windows\System32\lsass.exe", processAccessEvent.Fields?.GetValueOrDefault("targetImage"),
+            "Target image must be retained for sensitive-process access rules.");
+        Equal("0x1010", processAccessEvent.Fields?.GetValueOrDefault("grantedAccess"),
+            "Granted access mask must be retained as rule evidence.");
         True(!normalizer.TryNormalize(new(EventXml(255, 108, "Image", "test.exe"), null), out _, out _),
             "Unsupported source events must not create normalized evidence.");
         var invalidHash = EventXml(1, 111, "Image", "app.exe", ("Hashes", "SHA256=ABC"));
@@ -514,17 +529,22 @@ internal static class Demon2Checks
             var explanation = findings.Count > 0 ? "Règles " + actualRules + "; preuves " + string.Join(',', evidence) :
                 gaps.Count > 0 ? "Aucun verdict de menace; lacunes " + string.Join(',', missing) : "Aucun finding ni lacune de télémétrie.";
 
-            if (definition.Label == "benign" && findings.Count > 0 || definition.Label == "uncertain" && findings.Count > 0)
+            var referenceClarification = ReferenceClarification(definition.Id);
+            if (referenceClarification is not null)
+            {
+                status = "NEEDS_CLARIFICATION";
+                needsClarification++;
+                explanation = referenceClarification;
+            }
+            else if (definition.Label == "benign" && findings.Count > 0 || definition.Label == "uncertain" && findings.Count > 0)
             {
                 status = "FAIL";
                 failed++;
             }
             else if (definition.Label == "suspicious" && findings.Count == 0)
             {
-                var clarification = ReferenceClarification(definition.Id);
-                status = clarification is null ? "FAIL" : "NEEDS_CLARIFICATION";
-                if (clarification is null) failed++; else needsClarification++;
-                if (clarification is not null) explanation = clarification;
+                status = "FAIL";
+                failed++;
             }
             else if (definition.Label == "suspicious" && definition.ExpectedSeverityFromFindings is { } expectedSeverity &&
                 findings.Any(x => !string.Equals(x.Severity.ToString(), expectedSeverity, StringComparison.OrdinalIgnoreCase)))
@@ -570,6 +590,7 @@ internal static class Demon2Checks
 
     private static string? ReferenceClarification(string scenarioId) => scenarioId switch
     {
+        "D2-010" => "La simulation humaine classe le cas bénin mais demande un finding élevé; SQLite attend OBSERVATION sans finding.",
         "D2-027" => "Événement ImageLoad observé, mais la fixture ne fournit ni signature exploitable ni événement de corroboration; le moteur garde NEEDS_CONTEXT.",
         "D2-028" => "L’événement ProcessAccess de fixture ne contient ni TargetImage ni GrantedAccess; aucun verdict de menace n’est émis.",
         "D2-031" => "La table marque expected_threat, tandis que le résultat attendu exige un événement réseau/exfiltration ultérieur absent des lignes du scénario.",
@@ -579,6 +600,7 @@ internal static class Demon2Checks
         "D2-042" => "La fixture décrit une alerte Defender historique, source que le collecteur Sysmon de ce pipeline ne consomme pas.",
         "D2-043" => "Le résultat narratif demande déduplication sans alerte, mais le rapport structuré classe le cas NEEDS_CONTEXT.",
         "D2-044" => "La fixture attend NEEDS_CONTEXT pour l’ordre tardif, mais ses lignes ne donnent pas assez de détails parent/enfant horodatés pour matérialiser cette corrélation.",
+        "D2-019" or "D2-035" => "La simulation humaine demande un finding critique, mais les champs structurés severity et report attendent high; la divergence de sévérité est conservée et signalée.",
         "D2-050" => "La fixture décrit un téléchargement sans marque Zone.Identifier et ne fournit pas la durée de la fenêtre de suivi; aucun DOWNLOAD_OBSERVED n’est inventé.",
         _ => null
     };
@@ -808,6 +830,28 @@ internal static class Demon2Checks
         var networkOnly = MakeEvent("network-only", ThreatEventType.NETWORK_CONNECTION, Now, processId: 91);
         Equal(0, new DetectionEngine().Evaluate(networkOnly, [networkOnly], Now.AddSeconds(1)).Findings.Count,
             "A network connection alone must not be labeled suspicious.");
+        var imageLoadXml = EventXml(7, 116, "ImageLoaded", @"C:\Users\Public\unsigned.dll",
+            ("Image", @"C:\Program Files\Fixture\host.exe"), ("ProcessId", "116"), ("Signed", "false"));
+        True(new SysmonEventNormalizer().TryNormalize(new(imageLoadXml, null), out var unsignedImageLoad, out _),
+            "Unsigned Sysmon image load should normalize for the detection check.");
+        var imageLoadNetwork = MakeEvent("image-load-network", ThreatEventType.NETWORK_CONNECTION, Now.AddSeconds(1), processId: 116);
+        var imageFinding = new DetectionEngine().Evaluate(imageLoadNetwork, [unsignedImageLoad!, imageLoadNetwork], Now.AddSeconds(2))
+            .Findings.Single(x => x.RuleId == "unusual_image_load");
+        True(imageFinding.EvidenceRefs.Contains(unsignedImageLoad!.EventId) && imageFinding.EvidenceRefs.Contains(imageLoadNetwork.EventId),
+            "Unusual image-load finding must cite the loaded image and same-process corroboration.");
+        Equal(0, new DetectionEngine().Evaluate(unsignedImageLoad!, [unsignedImageLoad!], Now.AddSeconds(1)).Findings.Count,
+            "An unsigned module load without corroborating activity must not independently produce a finding.");
+        var accessXml = EventXml(10, 117, "SourceImage", @"C:\Tools\observer.exe", ("SourceProcessId", "117"),
+            ("TargetImage", @"C:\Windows\System32\lsass.exe"), ("GrantedAccess", "0x1010"));
+        True(new SysmonEventNormalizer().TryNormalize(new(accessXml, null), out var processAccess, out _),
+            "Sensitive process access should normalize for the detection check.");
+        var accessNetwork = MakeEvent("access-network", ThreatEventType.NETWORK_CONNECTION, Now.AddSeconds(1), processId: 117);
+        var accessFinding = new DetectionEngine().Evaluate(accessNetwork, [processAccess!, accessNetwork], Now.AddSeconds(2))
+            .Findings.Single(x => x.RuleId == "sensitive_process_access");
+        True(accessFinding.EvidenceRefs.Contains(processAccess!.EventId) && accessFinding.EvidenceRefs.Contains(accessNetwork.EventId),
+            "Sensitive process access finding must cite the access event and same-process corroboration.");
+        Equal(0, new DetectionEngine().Evaluate(processAccess!, [processAccess!], Now.AddSeconds(1)).Findings.Count,
+            "Sensitive process access without corroboration must not independently produce a finding.");
         var dnsQueries = Enumerable.Range(0, 5).Select(i => MakeEvent("dns-repeat-" + i, ThreatEventType.DOMAIN_QUERY,
             Now.AddSeconds(i * 5), processId: 701, remote: "beacon.example.test.")).ToArray();
         var dnsFinding = new DetectionEngine().Evaluate(dnsQueries[^1], dnsQueries, Now.AddSeconds(30)).Findings
