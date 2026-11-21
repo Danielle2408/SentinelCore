@@ -9,6 +9,22 @@ namespace SentinelCore.Demon1.VisualVerification;
 public enum VisualMatch { MATCH, NO_MATCH, INDETERMINATE }
 public enum LivenessResult { LIVE, SPOOF_SUSPECTED, INDETERMINATE }
 
+public static class LivenessDecisionPolicy
+{
+    /// <summary>Leaves a 0.40–0.60 uncertainty band when the live probability threshold is 0.60.</summary>
+    public static LivenessResult ClassifyAverage(double averageLiveProbability, double minimumLiveProbability = 0.60)
+    {
+        if (!double.IsFinite(averageLiveProbability) || averageLiveProbability is < 0 or > 1)
+            throw new ArgumentOutOfRangeException(nameof(averageLiveProbability));
+        if (!double.IsFinite(minimumLiveProbability) || minimumLiveProbability is <= 0.5 or >= 1)
+            throw new ArgumentOutOfRangeException(nameof(minimumLiveProbability));
+
+        if (averageLiveProbability >= minimumLiveProbability) return LivenessResult.LIVE;
+        if (averageLiveProbability <= 1 - minimumLiveProbability) return LivenessResult.SPOOF_SUSPECTED;
+        return LivenessResult.INDETERMINATE;
+    }
+}
+
 public sealed record VisualCheckResult(
     string CorrelationId,
     DateTimeOffset CapturedAtUtc,
@@ -31,7 +47,7 @@ public sealed record VisualVerificationOptions(
     int MaximumWaitSeconds = 60,
     double SimilarityThreshold = 0.363,
     double MinimumLivenessProbability = 0.60,
-    double MinimumFacePixels = 100,
+    double MinimumFacePixels = 80,
     float MinimumFaceConfidence = 0.60f,
     int LiveClassIndex = 1,
     bool Enabled = true,
@@ -41,7 +57,7 @@ public sealed record VisualVerificationOptions(
 /// Local-only visual enrollment and alert-time verification. It never sends frames or face
 /// templates over the inter-daemon pipe; only the result and an opaque evidence reference go to D3.
 /// </summary>
-public sealed class VisualVerificationService : IDisposable
+public sealed class VisualVerificationService : IVisualIdentityVerifier, IDisposable
 {
     private const int SampleIntervalMs = 350;
     private static readonly SemaphoreSlim CameraCaptureGate = new(1, 1);
@@ -85,7 +101,8 @@ public sealed class VisualVerificationService : IDisposable
         LastCaptureDiagnostics = sequence.Diagnostics;
         if (sequence.FramesMultipleFaces > 0) return (false, "ENROLLMENT_MULTIPLE_FACES");
         if (sequence.Embeddings.Count < 4) return (false, EnrollmentFailureReason(sequence));
-        if (sequence.LiveScores.Count < 4 || sequence.LiveScores.Average() < _options.MinimumLivenessProbability)
+        if (sequence.LiveScores.Count < 4 || LivenessDecisionPolicy.ClassifyAverage(
+                sequence.LiveScores.Average(), _options.MinimumLivenessProbability) != LivenessResult.LIVE)
             return (false, "ENROLLMENT_LIVENESS_NOT_CONFIRMED");
         var template = AverageAndNormalize(sequence.Embeddings);
         _store.SaveTemplate(profileId, template);
@@ -120,11 +137,11 @@ public sealed class VisualVerificationService : IDisposable
         if (sequence.Embeddings.Count < 3)
             return Inconclusive(correlationId, started, VerificationFailureReason(sequence), sequence, SaveEvidence(sequence.BestFrame, correlationId));
         if (sequence.LiveScores.Count < 3) return Inconclusive(correlationId, started, "LIVENESS_MODEL_NO_RESULT", sequence, SaveEvidence(sequence.BestFrame, correlationId));
-        var liveness = sequence.LiveScores.Average() >= _options.MinimumLivenessProbability
-            ? LivenessResult.LIVE : LivenessResult.SPOOF_SUSPECTED;
+        var liveness = LivenessDecisionPolicy.ClassifyAverage(sequence.LiveScores.Average(), _options.MinimumLivenessProbability);
         if (liveness != LivenessResult.LIVE)
             return new(correlationId, DateTimeOffset.UtcNow, VisualMatch.INDETERMINATE, liveness, null, null,
-                sequence.Quality, sequence.Embeddings.Count, SaveEvidence(sequence.BestFrame, correlationId), "LIVENESS_NOT_CONFIRMED");
+                sequence.Quality, sequence.Embeddings.Count, SaveEvidence(sequence.BestFrame, correlationId),
+                liveness == LivenessResult.SPOOF_SUSPECTED ? "LIVENESS_SPOOF_SUSPECTED" : "LIVENESS_UNCERTAIN");
         if (sequence.Quality < 0.55)
             return new(correlationId, DateTimeOffset.UtcNow, VisualMatch.INDETERMINATE, liveness, null, null,
                 sequence.Quality, sequence.Embeddings.Count, SaveEvidence(sequence.BestFrame, correlationId), "FACE_QUALITY_TOO_LOW");
@@ -217,7 +234,11 @@ public sealed class VisualVerificationService : IDisposable
                     _recognizer.AlignCrop(frame, detections, aligned);
                     _recognizer.Feature(aligned, features);
                     embeddings.Add(ReadFeature(features));
-                    frameQuality = Math.Clamp(detectorScore * Math.Min(1.0, Math.Min(faceWidth, faceHeight) / 180.0), 0, 1);
+                    // Quality is relative to the configured minimum accepted face size. This
+                    // keeps an 80 px face usable on the tested webcam instead of silently
+                    // penalizing it against an unrelated 180 px reference size.
+                    frameQuality = Math.Clamp(detectorScore * Math.Min(1.0,
+                        Math.Min(faceWidth, faceHeight) / Math.Max(1.0, _options.MinimumFacePixels)), 0, 1);
                     qualitySum += frameQuality;
                     liveScores.Add(GetLivenessProbability(frame, detections));
                     if (_alternativeLiveness is not null)
@@ -228,7 +249,7 @@ public sealed class VisualVerificationService : IDisposable
                 }
                 return new CaptureSequence(embeddings, liveScores, embeddings.Count == 0 ? 0 : qualitySum / embeddings.Count, bestFrame,
                     framesRead, framesNoFace, framesMultipleFaces, framesTooSmall, framesLowConfidence, maxFaceSize,
-                    $"read={framesRead};face={embeddings.Count};none={framesNoFace};multiple={framesMultipleFaces};small={framesTooSmall};lowConfidence={framesLowConfidence};maxFacePx={maxFaceSize:0};faceLumaCount={faceBrightness.Count};faceLumaAvg={(faceBrightness.Count == 0 ? 0 : faceBrightness.Average()):0.0};faceLumaMin={(faceBrightness.Count == 0 ? 0 : faceBrightness.Min()):0.0};faceLumaMax={(faceBrightness.Count == 0 ? 0 : faceBrightness.Max()):0.0};liveCount={liveScores.Count};liveAvg={(liveScores.Count == 0 ? 0 : liveScores.Average()):0.000};liveMin={(liveScores.Count == 0 ? 0 : liveScores.Min()):0.000};liveMax={(liveScores.Count == 0 ? 0 : liveScores.Max()):0.000};facenoxCount={alternativeLiveScores.Count};facenoxAvg={(alternativeLiveScores.Count == 0 ? 0 : alternativeLiveScores.Average()):0.000};facenoxMin={(alternativeLiveScores.Count == 0 ? 0 : alternativeLiveScores.Min()):0.000};facenoxMax={(alternativeLiveScores.Count == 0 ? 0 : alternativeLiveScores.Max()):0.000}");
+                    $"read={framesRead};face={embeddings.Count};none={framesNoFace};multiple={framesMultipleFaces};small={framesTooSmall};lowConfidence={framesLowConfidence};maxFacePx={maxFaceSize:0};faceLumaCount={faceBrightness.Count};faceLumaAvg={(faceBrightness.Count == 0 ? 0 : faceBrightness.Average()):0.0};faceLumaMin={(faceBrightness.Count == 0 ? 0 : faceBrightness.Min()):0.0};faceLumaMax={(faceBrightness.Count == 0 ? 0 : faceBrightness.Max()):0.0};liveCount={liveScores.Count};liveAvg={(liveScores.Count == 0 ? 0 : liveScores.Average()):0.000};liveMedian={Median(liveScores):0.000};liveMin={(liveScores.Count == 0 ? 0 : liveScores.Min()):0.000};liveMax={(liveScores.Count == 0 ? 0 : liveScores.Max()):0.000};liveAboveThreshold={liveScores.Count(x => x >= _options.MinimumLivenessProbability)}/{liveScores.Count};facenoxCount={alternativeLiveScores.Count};facenoxAvg={(alternativeLiveScores.Count == 0 ? 0 : alternativeLiveScores.Average()):0.000};facenoxMedian={Median(alternativeLiveScores):0.000};facenoxMin={(alternativeLiveScores.Count == 0 ? 0 : alternativeLiveScores.Min()):0.000};facenoxMax={(alternativeLiveScores.Count == 0 ? 0 : alternativeLiveScores.Max()):0.000}");
             }, token).ConfigureAwait(false);
         }
         finally { CameraCaptureGate.Release(); }
@@ -256,8 +277,8 @@ public sealed class VisualVerificationService : IDisposable
         using var input = Cv2.Dnn.BlobFromImage(resized, 1.0, new Size(80, 80), new Scalar(), false, false);
         _liveness.SetInput(input);
         using var output = _liveness.Forward();
-        var scores = new float[output.Total()];
-        for (var i = 0; i < scores.Length; i++) scores[i] = output.At<float>(i);
+        output.GetArray(out float[] scores);
+        if (scores.Length != output.Total()) throw new InvalidDataException("La sortie MiniFASNet n’a pas pu être lue intégralement.");
         if (_options.LiveClassIndex < 0 || _options.LiveClassIndex >= scores.Length) return 0;
         // Handle logits and already normalized probabilities.
         var probability = scores.All(x => x is >= 0 and <= 1) && Math.Abs(scores.Sum() - 1) < 0.02
@@ -310,10 +331,12 @@ public sealed class VisualVerificationService : IDisposable
         _alternativeLiveness.SetInput(input);
         using var output = _alternativeLiveness.Forward();
         if (output.Total() != 2) throw new InvalidDataException("Le modèle Facenox doit produire exactement deux scores.");
+        output.GetArray(out float[] scores);
+        if (scores.Length != 2) throw new InvalidDataException("La sortie Facenox n’a pas pu être lue intégralement.");
 
         // Upstream labels logits[0] as Real and logits[1] as Spoof.
-        var real = output.At<float>(0);
-        var spoof = output.At<float>(1);
+        var real = scores[0];
+        var spoof = scores[1];
         var max = Math.Max(real, spoof);
         var realExp = Math.Exp(real - max);
         var spoofExp = Math.Exp(spoof - max);
@@ -333,6 +356,14 @@ public sealed class VisualVerificationService : IDisposable
         var values = new float[feature.Cols * feature.Rows];
         for (var i = 0; i < values.Length; i++) values[i] = feature.At<float>(i / feature.Cols, i % feature.Cols);
         return values;
+    }
+
+    private static double Median(IReadOnlyList<double> values)
+    {
+        if (values.Count == 0) return 0;
+        var sorted = values.Order().ToArray();
+        var middle = sorted.Length / 2;
+        return sorted.Length % 2 == 0 ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle];
     }
 
     private static float[] AverageAndNormalize(IReadOnlyList<float[]> vectors)
