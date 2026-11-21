@@ -486,7 +486,9 @@ internal static class Demon2Checks
         foreach (var definition in definitions)
         {
             var records = await LoadFixtureRecords(reference, definition.Id);
-            if (definition.Id == "D2-043" && records.Count > 0) records.Add(records[0]); // Fixture explicitly models duplicate delivery.
+            // The SQLite scenario contains one source event, while its narrative says it is delivered twice.
+            // Repeat that same record in the replay input to exercise idempotence without editing the fixture.
+            if (definition.Id == "D2-043" && records.Count > 0) records.Add(records[0]);
             await using var maxTimeCommand = reference.CreateCommand();
             maxTimeCommand.CommandText = "SELECT MAX(ts_utc) FROM events WHERE scenario_id=$id;";
             maxTimeCommand.Parameters.AddWithValue("$id", definition.Id);
@@ -590,18 +592,17 @@ internal static class Demon2Checks
 
     private static string? ReferenceClarification(string scenarioId) => scenarioId switch
     {
-        "D2-010" => "La simulation humaine classe le cas bénin mais demande un finding élevé; SQLite attend OBSERVATION sans finding.",
-        "D2-027" => "Événement ImageLoad observé, mais la fixture ne fournit ni signature exploitable ni événement de corroboration; le moteur garde NEEDS_CONTEXT.",
-        "D2-028" => "L’événement ProcessAccess de fixture ne contient ni TargetImage ni GrantedAccess; aucun verdict de menace n’est émis.",
-        "D2-031" => "La table marque expected_threat, tandis que le résultat attendu exige un événement réseau/exfiltration ultérieur absent des lignes du scénario.",
-        "D2-032" => "La description parle d’un flux sortant, mais l’unique ligne est typée FILE_OR_SYSTEM_ACTIVITY et ne fournit pas d’événement réseau distinct.",
-        "D2-039" => "La fixture attend NEEDS_CONTEXT alors que son résultat narratif dit observation sans menace; la réputation du binaire portable n’est pas fournie.",
-        "D2-040" => "Le rapport structuré demande NEEDS_CONTEXT, mais le résultat narratif dit de ne pas utiliser l’heure seule; aucune preuve manquante supplémentaire n’est listée.",
-        "D2-042" => "La fixture décrit une alerte Defender historique, source que le collecteur Sysmon de ce pipeline ne consomme pas.",
-        "D2-043" => "Le résultat narratif demande déduplication sans alerte, mais le rapport structuré classe le cas NEEDS_CONTEXT.",
-        "D2-044" => "La fixture attend NEEDS_CONTEXT pour l’ordre tardif, mais ses lignes ne donnent pas assez de détails parent/enfant horodatés pour matérialiser cette corrélation.",
-        "D2-019" or "D2-035" => "La simulation humaine demande un finding critique, mais les champs structurés severity et report attendent high; la divergence de sévérité est conservée et signalée.",
-        "D2-050" => "La fixture décrit un téléchargement sans marque Zone.Identifier et ne fournit pas la durée de la fenêtre de suivi; aucun DOWNLOAD_OBSERVED n’est inventé.",
+        "D2-019" or "D2-035" => "La simulation demande un finding critique, alors que expected_findings et reports fixent severity=high; la gravité attendue doit être arbitrée.",
+        "D2-027" => "L’unique ligne est générique et ne fournit ni TargetImage/ImageLoaded, ni signature, ni corroboration. La simulation demande un finding moyen tandis que SQLite attend high; préciser la preuve et la sévérité.",
+        "D2-028" => "L’unique ligne ne fournit ni TargetImage ni GrantedAccess ni corroboration. Le texte conditionne le finding à une source fiable et un filtre adapté; préciser les données et si l’attendu est finding ou NEEDS_CONTEXT.",
+        "D2-031" => "Les lignes décrivent accès aux fichiers et création d’archive, sans événement réseau. Le texte attend un finding seulement si l’exfiltration est simulée ensuite, mais expected_findings l’impose déjà; ajouter l’événement manquant ou revoir l’attendu.",
+        "D2-032" => "La description mentionne un flux sortant synthétique, mais l’unique ligne est FILE_OR_SYSTEM_ACTIVITY et ne contient pas de destination ni d’événement NETWORK_CONNECTION. Le texte demande critical alors que SQLite attend high.",
+        "D2-039" => "Le texte attend une observation sans menace; reports classe NEEDS_CONTEXT. La fixture ne fournit pas de signature/éditeur ni de champ manquant structuré. Décider si l’observation suffit ou quel contexte doit être signalé.",
+        "D2-040" => "reports attend NEEDS_CONTEXT tandis que le scénario demande de ne pas se baser sur l’heure seule. L’unique événement est horodaté 12:01 UTC, ne représente pas une exécution nocturne et ne fournit ni signature ni éditeur; compléter les données et l’attendu.",
+        "D2-042" => "Le scénario parle d’une ancienne alerte Defender, mais l’événement fourni est une ligne générique SyntheticFixture sans source Defender ni date de détection historique. Le collecteur D2 lit Sysmon uniquement; préciser si ce cas est hors source ou ajouter un fournisseur et les dates nécessaires.",
+        "D2-043" => "SQLite ne contient qu’une ligne; le rejeu la livre deux fois en mémoire pour vérifier l’idempotence. L’attendu fonctionnel de déduplication est testable, mais reports demande NEEDS_CONTEXT sans champ manquant alors que le texte n’attend qu’aucune double alerte; préciser le type de rapport attendu.",
+        "D2-044" => "L’unique ligne NETWORK_ACTIVITY ne fournit pas de PID/GUID ni d’événement parent. Pour tester l’arrivée hors ordre, ajouter l’événement parent, les identifiants communs, ses timestamps et son délai d’arrivée; préciser le comportement si le parent n’arrive jamais.",
+        "D2-050" => "La ligne décrit un fichier reçu mais ne donne ni événement de téléchargement Zone.Identifier ni durée de suivi. reports attend NEEDS_CONTEXT, tandis que le texte attend une observation; fournir la preuve de téléchargement et définir la fenêtre de suivi ou confirmer l’observation seule.",
         _ => null
     };
 
