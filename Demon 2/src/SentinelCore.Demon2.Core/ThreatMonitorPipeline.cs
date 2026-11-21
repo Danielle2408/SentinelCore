@@ -17,9 +17,10 @@ public sealed class ThreatMonitorPipeline(
         await store.PruneExpiredAsync(Clock.GetUtcNow(), cancellationToken);
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var token = lifetime.Token;
+        var sourceOutages = new SourceOutageEpisodes();
         var publisher = PublishLoopAsync(token);
         var heartbeat = HeartbeatLoopAsync(token);
-        var healthTask = HealthLoopAsync(token);
+        var healthTask = HealthLoopAsync(token, sourceOutages);
         var retentionTask = RetentionLoopAsync(token);
         try
         {
@@ -28,13 +29,40 @@ public sealed class ThreatMonitorPipeline(
                 if (raw.SourceError is { } sourceError)
                 {
                     var gap = new TelemetryGap(Guid.NewGuid().ToString("N"), source.Name, Clock.GetUtcNow(),
-                        sourceError, 0, ["source_available"]);
-                    await PublishGapAsync(gap, Clock.GetUtcNow().AddMinutes(1), token);
+                        "Telemetry source reported temporary unavailability.", 0, ["source_available"]);
+                    var firstGapForEpisode = sourceOutages.TryBegin(gap);
+                    if (firstGapForEpisode is not null)
+                        await PublishGapAsync(firstGapForEpisode, Clock.GetUtcNow().AddMinutes(1), token);
                     continue;
                 }
-                if (!normalizer.TryNormalize(raw, out var item, out var rejected) || item is null)
+                sourceOutages.MarkRecovered();
+                CanonicalEvent? item;
+                string? rejected;
+                bool normalized;
+                try { normalized = normalizer.TryNormalize(raw, out item, out rejected); }
+                catch (Exception ex)
                 {
-                    Console.Error.WriteLine($"Sysmon event rejected: {rejected}");
+                    item = null;
+                    rejected = $"Normalizer failed: {ex.GetType().Name}";
+                    normalized = false;
+                }
+                if (!normalized || item is null)
+                {
+                    Console.Error.WriteLine("Sysmon event rejected during normalization.");
+                    var bookmarkIsBounded = raw.BookmarkXml is { Length: > 0 and <= SysmonEventNormalizer.MaxBookmarkCharacters };
+                    var poisonIdentity = bookmarkIsBounded ? raw.BookmarkXml! : Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                        System.Text.Encoding.UTF8.GetBytes(raw.Xml))).ToLowerInvariant();
+                    var gapId = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                        System.Text.Encoding.UTF8.GetBytes($"{source.Name}|malformed|{poisonIdentity}"))).ToLowerInvariant();
+                    var missingFields = bookmarkIsBounded || raw.BookmarkXml is null ? new[] { "normalizedEvent" } : new[] { "normalizedEvent", "sourceCursor" };
+                    await PublishGapAsync(new TelemetryGap(gapId, source.Name, Clock.GetUtcNow(),
+                        "Observed source record was rejected during normalization.", 0, missingFields),
+                        Clock.GetUtcNow().AddMinutes(1), token);
+                    if (bookmarkIsBounded && raw.BookmarkXml is { } rejectedCursor)
+                    {
+                        await store.SaveCursorAsync(source.Name, rejectedCursor, token);
+                        if (source is IEventCursorSource rejectedCursorSource) rejectedCursorSource.CommitCursor(rejectedCursor);
+                    }
                     continue;
                 }
                 var isNew = await store.SaveEventAsync(item, token);
@@ -103,8 +131,8 @@ public sealed class ThreatMonitorPipeline(
                 catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
                 catch (Exception ex)
                 {
-                    Console.Error.WriteLine($"Guard delivery failed for {message.MessageId}: {ex.Message}");
-                    await store.ScheduleMessageRetryAsync(message.MessageId, ex.Message, Clock.GetUtcNow().AddMilliseconds(250), ct);
+                    Console.Error.WriteLine($"Guard delivery failed for {message.MessageId}: {ex.GetType().Name}");
+                    await store.ScheduleMessageRetryAsync(message.MessageId, ex.GetType().Name, Clock.GetUtcNow().AddMilliseconds(250), ct);
                 }
             }
             await timer.WaitForNextTickAsync(ct);
@@ -123,19 +151,55 @@ public sealed class ThreatMonitorPipeline(
         }
     }
 
-    private async Task HealthLoopAsync(CancellationToken ct)
+    private async Task HealthLoopAsync(CancellationToken ct, SourceOutageEpisodes sourceOutages)
     {
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
-        string? lastGapSignature = null;
+        var healthMonitor = new TelemetryHealthMonitor();
+        var sourceSessionId = Guid.NewGuid().ToString("N");
+        long reportedDroppedCount = 0;
         while (await timer.WaitForNextTickAsync(ct))
         {
             var health = sourceHealth.GetHealth();
-            var gap = new TelemetryHealthMonitor().Evaluate(source.Name, health, Clock.GetUtcNow());
-            if (gap is null) { lastGapSignature = null; continue; }
-            var signature = $"{health.State}|{health.Error}|{health.DroppedCount}|{health.LastEventUtc}|{health.StartedAtUtc}";
-            if (signature == lastGapSignature) continue;
-            lastGapSignature = signature;
-            await PublishGapAsync(gap, Clock.GetUtcNow().AddMinutes(1), ct);
+            if (health.DroppedCount > reportedDroppedCount)
+            {
+                var droppedDelta = health.DroppedCount - reportedDroppedCount;
+                reportedDroppedCount = health.DroppedCount;
+                var dropKey = $"{source.Name}|{sourceSessionId}|drops|{reportedDroppedCount}";
+                var gapId = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                    System.Text.Encoding.UTF8.GetBytes(dropKey))).ToLowerInvariant();
+                await PublishGapAsync(new TelemetryGap(gapId, source.Name, Clock.GetUtcNow(),
+                    "The bounded collector queue discarded telemetry records.", droppedDelta, ["sourceEvents"]),
+                    Clock.GetUtcNow().AddMinutes(1), ct);
+            }
+
+            // Loss totals are reported as deltas above. Evaluate only the current source state here,
+            // so a historical drop does not keep a recovered source in an outage episode.
+            var gap = healthMonitor.Evaluate(source.Name, health with { DroppedCount = 0 }, Clock.GetUtcNow());
+            if (gap is null) { sourceOutages.MarkRecovered(); continue; }
+            var firstGapForEpisode = sourceOutages.TryBegin(gap);
+            if (firstGapForEpisode is not null)
+                await PublishGapAsync(firstGapForEpisode, Clock.GetUtcNow().AddMinutes(1), ct);
+        }
+    }
+
+    private sealed class SourceOutageEpisodes
+    {
+        private readonly object _gate = new();
+        private bool _active;
+
+        public TelemetryGap? TryBegin(TelemetryGap gap)
+        {
+            lock (_gate)
+            {
+                if (_active) return null;
+                _active = true;
+                return gap;
+            }
+        }
+
+        public void MarkRecovered()
+        {
+            lock (_gate) _active = false;
         }
     }
 
@@ -154,7 +218,7 @@ public sealed class ThreatMonitorPipeline(
 
     private async ValueTask PublishGapAsync(TelemetryGap gap, DateTimeOffset expiresAtUtc, CancellationToken ct)
     {
-        await store.SaveTelemetryGapAsync(gap, ct);
+        if (!await store.SaveTelemetryGapAsync(gap, ct)) return;
         await EnqueueAsync(InterDaemonEnvelopeFactory.ForGap(gap, expiresAtUtc), ct);
     }
 }

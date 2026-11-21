@@ -8,7 +8,7 @@ This directory contains the Demon 2 implementation. It observes Windows telemetr
 - `SentinelCore.Demon2.Core` contains typed canonical events, Sysmon normalization, bounded temporal correlation, deterministic rules, telemetry health, SQLite persistence, a durable bounded outbox, and the inter-daemon envelope contract.
 - `SentinelCore.Demon2.Tests` is the repository's executable check harness, following the existing Demon 1 test convention. It replays the unchanged synthetic SQLite reference database.
 
-The collector resumes from a persisted Event Log bookmark. It writes normalized records to SQLite before advancing that cursor. Duplicate source records are ignored while still advancing a previously committed cursor. The local event retention defaults to seven days and can be changed with `SENTINELCORE_D2_RETENTION_DAYS` (1–365). The service database is stored under `%ProgramData%\SentinelCore\Demon2`.
+The collector resumes from a persisted Event Log bookmark. It writes normalized records to SQLite before advancing that cursor. Duplicate source records are ignored while still advancing a previously committed cursor. A malformed observed record is rejected with a deterministic, idempotent `TELEMETRY_GAP`; its cursor is committed so a poison record cannot block later telemetry. Collector overflow is reported separately as a dropped-event count. The watcher reports unavailable while it is disconnected and degraded while active with an error or recorded loss; it retries the source and reports healthy again when fresh telemetry resumes. No events are synthesized to fill a gap. The local event retention defaults to seven days and can be changed with `SENTINELCORE_D2_RETENTION_DAYS` (1–365). The service database is stored under `%ProgramData%\SentinelCore\Demon2`.
 
 The Core project targets `net10.0` and uses `Microsoft.Data.Sqlite` 11.0.0. The resolved native dependency is SQLite 3.53.4 through `SQLitePCLRaw.bundle_e_sqlite3` 3.0.5. The test harness checks the loaded `sqlite_version()` at runtime.
 
@@ -35,7 +35,7 @@ Two reference inconsistencies are preserved and reported rather than rewritten:
 
 The fixtures are synthetic narratives and small event summaries. They are useful for deterministic replay and regression checks, not for measuring detection rates on real Windows telemetry.
 
-Latest replay results: 50 scenarios executed, 40 passed, 0 unexplained failures, and 10 require clarification. The clarification cases are D2-027, D2-028, D2-031, D2-032, D2-039, D2-040, D2-042, D2-043, D2-044, and D2-050. Event coverage is 10/11 (`DOMAIN_REPUTATION` is not supplied by the selected telemetry); rule coverage is 8/10 (`sensitive_process_access` and `unusual_image_load` did not fire). These results report reference ambiguities and missing telemetry without changing the supplied database.
+Latest replay results: 50 scenarios executed, 40 passed, 0 unexplained failures, and 10 require clarification. The clarification cases are D2-027, D2-028, D2-031, D2-032, D2-039, D2-040, D2-042, D2-043, D2-044, and D2-050. Event coverage is 10/11 (`DOMAIN_REPUTATION` is not supplied by the selected telemetry); rule coverage is 8/10 (`sensitive_process_access` and `unusual_image_load` did not fire). These results report reference ambiguities and missing telemetry without changing the supplied database. The replay harness emits UTF-8 and classifies French fixture descriptions after Unicode diacritic normalization; fixture interpretation therefore does not rely on byte-mangled accent spellings. The fixture database was opened read-only and left unchanged.
 
 ## Build and checks
 
@@ -44,4 +44,69 @@ dotnet build 'Demon 2\tests\SentinelCore.Demon2.Tests\SentinelCore.Demon2.Tests.
 dotnet run --project 'Demon 2\tests\SentinelCore.Demon2.Tests\SentinelCore.Demon2.Tests.csproj'
 ```
 
-The executable checks cover event normalization, the v1 envelope and JSONL, SQLite idempotence/cursors/retention/outbox and runtime version, the persistent Named Pipe session, all 50 fixture replays, benign/suspicious/ambiguous outcomes, duplicate findings, event expiry, out-of-order parent correlation, and telemetry gaps.
+The executable checks cover event normalization, the v1 envelope and JSONL, SQLite idempotence/cursors/retention/outbox and runtime version, the persistent Named Pipe session, all 50 fixture replays, benign/suspicious/ambiguous outcomes, duplicate findings, event and finding expiry, out-of-order parent correlation, source unavailable/recovery health, malformed-event rejection and continuation, deterministic duplicate gap handling, and separation of malformed input from source outage. The latest resilience run added an integration check in which valid, duplicate, distinct, malformed, recovered-valid, and source-outage records pass through one pipeline; all three distinct valid events remained stored and the two gap types remained separately traceable.
+
+## Windows operation
+
+`SentinelCore.Demon2.Service.Program.Main` is the entry point. The existing `WindowsServiceDispatcher` connects the process to the Windows Service Control Manager as `SentinelCoreDemon2`. When started from an interactive console rather than SCM, it runs the same worker in the foreground and handles Ctrl+C as a clean stop. The dispatcher is the service wrapper; the repository does not include an installer or register the service automatically.
+
+To run in the foreground for diagnosis, build the solution and run:
+
+```powershell
+dotnet run --project 'Demon 2\src\SentinelCore.Demon2.Service\SentinelCore.Demon2.Service.csproj'
+```
+
+Stop the foreground process with Ctrl+C. For a Windows service deployment, publish the service, register it once from an elevated PowerShell session, then use SCM to start and stop it. Registration changes Windows service configuration and is intentionally not part of daemon startup:
+
+```powershell
+dotnet publish 'Demon 2\src\SentinelCore.Demon2.Service\SentinelCore.Demon2.Service.csproj' -c Release -o 'C:\SentinelCore\Demon2'
+$serviceExe = 'C:\SentinelCore\Demon2\SentinelCore.Demon2.Service.exe'
+$dataRoot = Join-Path $env:ProgramData 'SentinelCore\Demon2'
+New-Item -ItemType Directory -Force -Path $dataRoot | Out-Null
+New-Service -Name 'SentinelCoreDemon2' -DisplayName 'SentinelCore Demon 2 Threat Monitor' -BinaryPathName "`"$serviceExe`"" -StartupType Manual
+# Configure the dedicated non-admin identity in Services.msc > Log On before starting.
+# Then grant it Modify on $dataRoot, and read access to the Sysmon channel if its ACL requires it.
+Start-Service -Name 'SentinelCoreDemon2'
+Get-Service -Name 'SentinelCoreDemon2'
+Stop-Service -Name 'SentinelCoreDemon2'
+Get-Service -Name 'SentinelCoreDemon2'
+```
+
+Successful `Get-Service` status is `Running`. The service handles SCM Stop and Shutdown by cancelling collection and the pipeline, disposing the Event Log watcher, waiting for its worker loops, then closing SQLite and Named Pipe resources. The foreground path treats Ctrl+C cancellation as a normal exit. The persisted Sysmon bookmark advances only after an event is saved (or a malformed event is recorded as a gap); an event interrupted before that point can be replayed after restart. Windows Event Log history may be overwritten while D2 is stopped; there is no claim that overwritten events can be recovered.
+
+### Least privilege and storage access
+
+The service does not require an administrator token by design. Its runtime identity needs read access to `Microsoft-Windows-Sysmon/Operational`, `Modify` access only to `%ProgramData%\SentinelCore\Demon2` (SQLite database, WAL/SHM sidecars, cursors, and logs), and the Windows right to log on as a service. The channel's effective ACL must be checked on the target machine; this repository cannot grant or verify it. Service registration and any channel ACL change are deployment operations that require an authorized administrator. Run the foreground test under the intended service identity to confirm channel access before deployment. After creating the service, configure its dedicated non-administrator identity in the Services console and set a restrictive ACL on the data directory before starting it. Do not grant local administrator membership to make event collection work.
+
+Sysmon events are parsed with DTDs prohibited and a 1 Mi-character XML cap; bookmarks are capped at 65,536 characters. Process IDs and ports are range-checked, domains/IP strings are validated, and malformed optional host/hash values remain explicitly unavailable. Windows paths are retained as opaque evidence (maximum 32,767 characters); no telemetry value is passed to a process, shell, or command API. Command lines and user SIDs are not copied into canonical events. Raw XML is not persisted. Local normalized records can include machine name, image/path, process identifiers, and selected provider fields; findings publish event references and summarized facts rather than raw paths or event content.
+
+SQLite commands use parameters. The store enables WAL, foreign keys, and `secure_delete`; event age retention defaults to seven days. There is no hard database-size quota, so a high event rate or long retention can still exhaust disk space. A write failure propagates to the service worker and is surfaced as a critical runtime failure rather than being treated as successful collection; log persistence may also fail if its directory is inaccessible. The directory ACL in the deployment example limits access, but ACLs and actual channel readability must be verified on the target Windows host.
+
+Error logs use UTC timestamps, redact common secret-like key/value fields, truncate long lines, and stop writing once a daily file reaches 10 MiB; persistent file output resumes on the next UTC day. Daily files are not automatically deleted, so the operator must apply an approved retention policy and monitor total disk use. The daemon performs no active domain lookups, reputation queries, scans, or network blocking; `DOMAIN_REPUTATION` is not emitted without an actual provider.
+
+The service database and bookmarks are under `%ProgramData%\SentinelCore\Demon2\events.sqlite`. Error and diagnostic output is written to daily UTF-8 files under `%ProgramData%\SentinelCore\Demon2\logs\threat-monitor-YYYYMMDD.log` (capped at 10 MiB per day) and also forwarded to interactive stderr. The current log level is fixed to diagnostic/error messages; there is no log-level environment switch. Check health in the Guard heartbeat: `status`, `queueDepth`, `droppedCount`, and `outboxDepth` are reported there. `TELEMETRY_GAP` messages distinguish an unavailable source, malformed record, and counted queue loss. The process does not expose a local HTTP health endpoint.
+
+## Explicit configuration
+
+| Setting | Current behavior |
+| --- | --- |
+| Runtime and target | C# / .NET; projects target `net10.0`. This host has SDKs 10.0.404 and 11.0.100 and runtime 10.0.15; with no `global.json`, the CLI currently selects SDK 11.0.100. |
+| Telemetry source | Sysmon Event Log channel `Microsoft-Windows-Sysmon/Operational`; event driven, with a 2-second retry after watcher failure. |
+| Storage | Fixed database path above; retention defaults to 7 days. `SENTINELCORE_D2_RETENTION_DAYS` accepts 1–365. |
+| Observation mode | Always observation-only; no response actions, persistence edits, process suspension, shell execution, or active network contact. Microsoft Defender is not changed. |
+| Internal intervals | Health sampling 5 seconds, heartbeat 10 seconds, outbox retry poll 250 ms, retention cleanup 1 hour; collector queue capacity 2,048 records. |
+| Correlation | 10-minute temporal window and up to 4,096 candidate events per correlation query. |
+| Rules | Deterministic, versioned catalog in `DetectionRuleCatalog`; no runtime rule-edit configuration. |
+| Dependencies | NuGet `PackageReference` with `project.assets.json` restore; Service directly references `System.Diagnostics.EventLog` 8.0.1. SQLite resolves to `Microsoft.Data.Sqlite` 11.0.0 and native SQLite 3.53.4. |
+
+Fixture/replay mode is the test executable, not a service switch. Run the second command in **Build and checks** to replay the read-only 50-scenario reference database. The test harness uses temporary SQLite files for lifecycle and load cases and removes those temporary test files after the checks.
+
+## Reproducible performance sample
+
+The executable check `Sustained-load performance measurement` sends 256 synthetic Sysmon Event ID 11 records with distinct event IDs, paths, and process IDs through normalization, SQLite storage, correlation, and rule evaluation, followed by one malformed XML record. It measures wall-clock duration, process CPU time, managed heap delta, process working-set delta, total managed allocations, valid events, rejections, source queue depth/capacity, source-reported drops, findings, event throughput, and separately timed correlation and detection for the final event. The last two values are a single-event stage sample, not percentiles. This is an in-process replay on the current Windows host, not a production Sysmon throughput benchmark.
+
+Most recent Release sample: 256 processed, 1 rejected, 0 source-reported drops, 0 findings; 0.92 seconds elapsed, 3.61 ms average pipeline time per valid record, 277 events/s, 86.29% of one logical CPU equivalent, +2.99 MB managed heap, +6.23 MB working set, and 121.61 MB managed allocations. The sampled source queue depth was 0; final-event correlation took 3.55 ms and detection took 32.80 microseconds. These values vary with host load, SDK/runtime, and storage performance; they are a repeatable baseline, not a service capacity guarantee.
+
+## Test environment limits
+
+The executable harness covers unit-style checks for normalization, rules, correlation, expiry, and health, plus SQLite-backed pipeline integration, fixture replay, restart/idempotence, cancellation during normalization, invalid-input continuation, and sustained replay. The persistent Named Pipe test uses an actual local Windows named pipe and a test peer in the same process. The tests do not install or start the Windows service, read the machine's Sysmon channel, or induce a real Event Log outage; those checks require a separately provisioned Windows test machine with Sysmon and SCM access. No such live system change was performed for this validation.

@@ -15,6 +15,7 @@ public sealed class SysmonEventSource(string? bookmarkXml = null) : IEventSource
         SingleReader = true,
         SingleWriter = false
     });
+    private readonly CancellationTokenSource _disposeStop = new();
     private EventLogWatcher? _watcher;
     private TaskCompletionSource? _watcherFailure;
     private Task? _watchTask;
@@ -24,6 +25,7 @@ public sealed class SysmonEventSource(string? bookmarkXml = null) : IEventSource
     private DateTimeOffset? _lastEventUtc;
     private DateTimeOffset? _startedAtUtc;
     private string? _error;
+    private int _disposeStarted;
     private bool _started;
     private volatile bool _disposed;
 
@@ -34,18 +36,27 @@ public sealed class SysmonEventSource(string? bookmarkXml = null) : IEventSource
         if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Sysmon Event Log collection requires Windows.");
         if (_started) throw new InvalidOperationException("A Sysmon source instance can only be consumed once.");
         _started = true;
-        _watchTask = WatchLoopAsync(cancellationToken);
-        await foreach (var record in _records.Reader.ReadAllAsync(cancellationToken))
+        using var watchStop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _disposeStop.Token);
+        _watchTask = WatchLoopAsync(watchStop.Token);
+        try
         {
-            Interlocked.Decrement(ref _queueDepth);
-            yield return record;
+            await foreach (var record in _records.Reader.ReadAllAsync(cancellationToken))
+            {
+                Interlocked.Decrement(ref _queueDepth);
+                yield return record;
+            }
         }
-        if (_watchTask is not null) await _watchTask;
+        finally
+        {
+            watchStop.Cancel();
+            if (_watchTask is not null) await _watchTask;
+        }
     }
 
     public EventSourceHealth GetHealth()
     {
-        var state = _error is not null ? TelemetryState.Degraded : _watcher?.Enabled == true ? TelemetryState.Available : TelemetryState.Unavailable;
+        var watching = _watcher?.Enabled == true;
+        var state = TelemetryHealthMonitor.ClassifySourceState(watching, _error);
         return new(state, Interlocked.Read(ref _dropped), _error, _lastEventUtc, Volatile.Read(ref _queueDepth), _startedAtUtc);
     }
 
@@ -68,7 +79,7 @@ public sealed class SysmonEventSource(string? bookmarkXml = null) : IEventSource
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
             catch (Exception ex)
             {
-                _error = $"Sysmon Event Log unavailable: {ex.Message}";
+                _error = $"Sysmon Event Log unavailable ({ex.GetType().Name}).";
                 _startedAtUtc ??= DateTimeOffset.UtcNow;
                 QueueSourceError(_error);
             }
@@ -81,7 +92,11 @@ public sealed class SysmonEventSource(string? bookmarkXml = null) : IEventSource
                     _watcher = null;
                 }
             }
-            if (!_disposed && !ct.IsCancellationRequested) await Task.Delay(TimeSpan.FromSeconds(2), ct);
+            if (!_disposed && !ct.IsCancellationRequested)
+            {
+                try { await Task.Delay(TimeSpan.FromSeconds(2), ct); }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
+            }
         }
     }
 
@@ -89,22 +104,36 @@ public sealed class SysmonEventSource(string? bookmarkXml = null) : IEventSource
     {
         if (e.EventException is not null)
         {
-            _error = e.EventException.Message;
-            QueueSourceError($"Sysmon Event Log watcher failed: {e.EventException.Message}");
+            _error = $"Sysmon Event Log watcher failed ({e.EventException.GetType().Name}).";
+            QueueSourceError(_error);
             _watcherFailure?.TrySetResult();
             return;
         }
         if (e.EventRecord is not { } record) return;
         using (record)
         {
-            var entry = new SysmonRecord(record.ToXml(), record.Bookmark?.BookmarkXml);
-            Interlocked.Increment(ref _queueDepth);
-            if (_records.Writer.TryWrite(entry))
+            try
             {
-                _lastEventUtc = DateTimeOffset.UtcNow;
-                _error = null;
+                var entry = new SysmonRecord(record.ToXml(), record.Bookmark?.BookmarkXml);
+                Interlocked.Increment(ref _queueDepth);
+                if (_records.Writer.TryWrite(entry))
+                {
+                    _lastEventUtc = DateTimeOffset.UtcNow;
+                    if (_watcher?.Enabled == true) _error = null;
+                }
+                else
+                {
+                    Interlocked.Decrement(ref _queueDepth);
+                    Interlocked.Increment(ref _dropped);
+                    _error = "Sysmon event queue is full; a telemetry record was dropped.";
+                }
             }
-            else { Interlocked.Decrement(ref _queueDepth); Interlocked.Increment(ref _dropped); }
+            catch (Exception ex)
+            {
+                Interlocked.Increment(ref _dropped);
+                _error = $"Sysmon event could not be read ({ex.GetType().Name}).";
+                QueueSourceError(_error);
+            }
         }
     }
 
@@ -114,17 +143,19 @@ public sealed class SysmonEventSource(string? bookmarkXml = null) : IEventSource
         if (!_records.Writer.TryWrite(new SysmonRecord("", null, message)))
         {
             Interlocked.Decrement(ref _queueDepth);
-            Interlocked.Increment(ref _dropped);
         }
     }
 
     public void CommitCursor(string cursor) => _bookmarkXml = cursor;
 
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposeStarted, 1) != 0) return;
         _disposed = true;
+        _disposeStop.Cancel();
         _records.Writer.TryComplete();
         _watcher?.Dispose();
-        return ValueTask.CompletedTask;
+        try { if (_watchTask is not null) await _watchTask; }
+        finally { _disposeStop.Dispose(); }
     }
 }

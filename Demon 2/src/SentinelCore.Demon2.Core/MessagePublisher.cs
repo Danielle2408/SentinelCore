@@ -10,14 +10,14 @@ public static class InterDaemonEnvelopeFactory
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { Converters = { new JsonStringEnumConverter() } };
 
     public static InterDaemonEnvelope ForFinding(ThreatFinding finding, DateTimeOffset nowUtc) => Make(
-        finding.CorrelationId, "THREAT_FINDING", finding.ExpiresAtUtc,
+        finding.CorrelationId, "THREAT_FINDING", nowUtc, finding.ExpiresAtUtc,
         new { findingId = finding.FindingId, ruleId = finding.RuleId, ruleVersion = finding.RuleVersion,
             severity = finding.Severity.ToString(), confidence = finding.Confidence, firstSeenUtc = finding.FirstSeenUtc,
             lastSeenUtc = finding.LastSeenUtc, summary = finding.Summary, facts = finding.Facts,
             evidenceRefs = finding.EvidenceRefs, missingTelemetry = finding.MissingTelemetry });
 
     public static InterDaemonEnvelope ForGap(TelemetryGap gap, DateTimeOffset expiresAtUtc) => Make(
-        gap.GapId, "TELEMETRY_GAP", expiresAtUtc,
+        gap.GapId, "TELEMETRY_GAP", gap.ObservedAtUtc, expiresAtUtc,
         new { gapId = gap.GapId, source = gap.Source, reason = gap.Reason, droppedCount = gap.DroppedCount,
             missingFields = gap.MissingFields });
 
@@ -27,16 +27,16 @@ public static class InterDaemonEnvelopeFactory
         var allowed = new HashSet<string>(StringComparer.Ordinal) { "sessionState", "localOrRemote", "recentAuthBand" };
         if (requestedFields.Count == 0 || requestedFields.Any(x => !allowed.Contains(x)))
             throw new ArgumentException("Only allowlisted session context fields may be requested.", nameof(requestedFields));
-        return Make(correlationId, "SESSION_CONTEXT_REQUEST", deadlineUtc,
+        return Make(correlationId, "SESSION_CONTEXT_REQUEST", DateTimeOffset.UtcNow, deadlineUtc,
             new { requestedFields = requestedFields.Distinct(StringComparer.Ordinal).ToArray(), deadlineUtc });
     }
 
     public static InterDaemonEnvelope Heartbeat(string correlationId, EventSourceHealth health, int outboxDepth, DateTimeOffset nowUtc) => Make(
-        correlationId, "HEARTBEAT", nowUtc.AddSeconds(30), new { status = health.State.ToString(),
+        correlationId, "HEARTBEAT", nowUtc, nowUtc.AddSeconds(30), new { status = health.State.ToString(),
             queueDepth = health.QueueDepth, outboxDepth, lastEventUtc = health.LastEventUtc, droppedCount = health.DroppedCount });
 
-    private static InterDaemonEnvelope Make(string correlationId, string type, DateTimeOffset expires, object payload) =>
-        new(Guid.NewGuid(), correlationId, DateTimeOffset.UtcNow, "ThreatMonitor", "RiskResponseGuard", type, 1,
+    private static InterDaemonEnvelope Make(string correlationId, string type, DateTimeOffset timestamp, DateTimeOffset expires, object payload) =>
+        new(Guid.NewGuid(), correlationId, timestamp.ToUniversalTime(), "ThreatMonitor", "RiskResponseGuard", type, 1,
             expires.ToUniversalTime(), JsonSerializer.SerializeToElement(payload, JsonOptions));
 }
 
