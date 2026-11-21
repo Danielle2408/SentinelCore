@@ -91,7 +91,7 @@ public sealed class SysmonEventNormalizer : IEventNormalizer<SysmonRecord>
             }
 
             var imagePath = Get("Image") ?? (eventId == 10 ? Get("SourceImage") : null);
-            var targetPath = Get("TargetFilename");
+            var targetPath = eventId == 7 ? Get("ImageLoaded") : Get("TargetFilename");
             if (targetPath?.Length > MaxWindowsPathCharacters || imagePath?.Length > MaxWindowsPathCharacters)
             {
                 rejectionReason = "Sysmon process image or file path exceeds the Windows path limit.";
