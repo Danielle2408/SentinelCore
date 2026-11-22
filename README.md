@@ -39,7 +39,7 @@ dotnet build 'Demon 2\SentinelCore.Demon2.slnx' -c Release
 dotnet run --project 'Demon 2\tests\SentinelCore.Demon2.Tests\SentinelCore.Demon2.Tests.csproj' -c Release
 ```
 
-Les exécutables de test contiennent les contrôles unitaires et d'intégration ainsi que le rejeu des fixtures de chaque démon. Pour D2, le rejeu fourni contient 50 scénarios synthétiques. À la dernière validation consignée dans le guide D2, 37 scénarios correspondaient aux attentes structurées et 13 ont été laissés à clarifier en raison de contradictions ou d'éléments de télémétrie manquants. La couverture observée dans ces fixtures était de 10 types d'événements sur 11 et de 8 règles sur 10. Ces chiffres décrivent les fixtures, pas le taux de détection en conditions réelles.
+Les exécutables de test contiennent les contrôles unitaires et d'intégration ainsi que le rejeu des fixtures de chaque démon. Pour D2, le rejeu fourni contient 50 scénarios synthétiques. À la dernière validation consignée dans le guide D2, 38 scénarios correspondaient aux attentes structurées et 12 ont été laissés à clarifier en raison de contradictions ou d'éléments de télémétrie manquants. La couverture observée dans ces fixtures était de 10 types d'événements sur 11 et de 8 règles sur 10. Ces chiffres décrivent les fixtures, pas le taux de détection en conditions réelles.
 
 ## Limites connues
 
