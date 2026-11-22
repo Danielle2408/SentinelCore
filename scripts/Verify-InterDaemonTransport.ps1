@@ -31,6 +31,18 @@ $script:defenderScanModeSeen = $false
 $script:powerShellCaptureSeen = $false
 $script:powerShellCaptureSkipped = $false
 
+function Set-ProcessArguments([System.Diagnostics.ProcessStartInfo]$startInfo, [string[]]$arguments) {
+    $quoted = foreach ($argument in $arguments) { '"' + $argument.Replace('"', '\"') + '"' }
+    $startInfo.Arguments = [string]::Join(' ', [string[]]$quoted)
+}
+
+function Stop-ProcessTree([System.Diagnostics.Process]$process) {
+    if ($process.HasExited) { return }
+    if ($PSVersionTable.PSVersion.Major -ge 7) { $process.Kill($true); return }
+    & (Join-Path $env:SystemRoot 'System32\taskkill.exe') /PID $process.Id /T /F | Out-Null
+    if (-not $process.HasExited) { $process.Kill() }
+}
+
 function Build-ReleaseProject([string]$projectPath) {
     & dotnet build $projectPath --configuration Release --no-restore --nologo -m:1 -p:NuGetAudit=false
     if ($LASTEXITCODE -ne 0) { throw "Échec de compilation : $projectPath" }
@@ -45,8 +57,8 @@ function Start-LoggedProcess([string]$name, [string]$exePath, [string[]]$argumen
     $startInfo.RedirectStandardInput = $true
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
-    $startInfo.Environment['SENTINELCORE_TEST_GUARD_PIPE_NAME'] = $pipeName
-    foreach ($argument in $arguments) { [void]$startInfo.ArgumentList.Add($argument) }
+    $startInfo.EnvironmentVariables['SENTINELCORE_TEST_GUARD_PIPE_NAME'] = $pipeName
+    Set-ProcessArguments $startInfo $arguments
 
     $process = [System.Diagnostics.Process]::new()
     $process.StartInfo = $startInfo
@@ -95,7 +107,7 @@ function Stop-StartedProcesses {
     foreach ($process in $processes) {
         if ($process.HasExited) { continue }
         if (-not $process.WaitForExit(10000)) {
-            $process.Kill($true)
+            Stop-ProcessTree $process
             [void]$process.WaitForExit(5000)
         }
     }
@@ -148,14 +160,12 @@ function Send-BenignPowerShellProbe([string]$marker, [string]$probeScriptPath) {
     $info.CreateNoWindow = $true
     $info.RedirectStandardOutput = $true
     $info.RedirectStandardError = $true
-    foreach ($argument in @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $probeScriptPath)) {
-        [void]$info.ArgumentList.Add($argument)
-    }
+    Set-ProcessArguments $info @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $probeScriptPath)
     $probe = [System.Diagnostics.Process]::new()
     $probe.StartInfo = $info
     try {
         if (-not $probe.Start()) { throw 'Echec du lancement du probe Windows PowerShell inoffensif.' }
-        if (-not $probe.WaitForExit(15000)) { $probe.Kill($true); throw 'Le probe PowerShell a dépassé 15 secondes.' }
+        if (-not $probe.WaitForExit(15000)) { Stop-ProcessTree $probe; throw 'Le probe PowerShell a dépassé 15 secondes.' }
         if ($probe.ExitCode -ne 0) { throw ('Le probe PowerShell a échoué avec le code ' + $probe.ExitCode + '.') }
     }
     finally { $probe.Dispose() }

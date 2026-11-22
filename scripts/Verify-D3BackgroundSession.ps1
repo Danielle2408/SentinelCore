@@ -14,6 +14,18 @@ $handleFile = Join-Path $testRoot 'shutdown-handle.txt'
 $pipeName = 'SentinelCore.Guard.BackgroundTest.' + [guid]::NewGuid().ToString('N')
 $process = $null
 
+function Set-ProcessArguments([System.Diagnostics.ProcessStartInfo]$startInfo, [string[]]$arguments) {
+    $quoted = foreach ($argument in $arguments) { '"' + $argument.Replace('"', '\"') + '"' }
+    $startInfo.Arguments = [string]::Join(' ', [string[]]$quoted)
+}
+
+function Stop-ProcessTree([System.Diagnostics.Process]$process) {
+    if ($process.HasExited) { return }
+    if ($PSVersionTable.PSVersion.Major -ge 7) { $process.Kill($true); return }
+    & (Join-Path $env:SystemRoot 'System32\taskkill.exe') /PID $process.Id /T /F | Out-Null
+    if (-not $process.HasExited) { $process.Kill() }
+}
+
 try {
     & dotnet build $project --configuration Release --nologo -m:1 -p:NuGetAudit=false
     if ($LASTEXITCODE -ne 0) { throw 'La compilation de D3 a échoué.' }
@@ -27,11 +39,9 @@ try {
     $startInfo.RedirectStandardInput = $true
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
-    $startInfo.Environment['SENTINELCORE_TEST_GUARD_PIPE_NAME'] = $pipeName
-    $startInfo.Environment['SENTINELCORE_TEST_SHUTDOWN_HANDLE_PATH'] = $handleFile
-    foreach ($argument in @('--serve', '--model', 'gemma3:1b', '--reports-dir', $reportsDirectory)) {
-        [void]$startInfo.ArgumentList.Add($argument)
-    }
+    $startInfo.EnvironmentVariables['SENTINELCORE_TEST_GUARD_PIPE_NAME'] = $pipeName
+    $startInfo.EnvironmentVariables['SENTINELCORE_TEST_SHUTDOWN_HANDLE_PATH'] = $handleFile
+    Set-ProcessArguments $startInfo @('--serve', '--model', 'gemma3:1b', '--reports-dir', $reportsDirectory)
 
     $process = [System.Diagnostics.Process]::new()
     $process.StartInfo = $startInfo
@@ -107,7 +117,7 @@ public static class SentinelCoreShutdownProbe {
 finally {
     if ($null -ne $process) {
         try {
-            if (-not $process.HasExited) { $process.Kill($true); [void]$process.WaitForExit(5000) }
+            if (-not $process.HasExited) { Stop-ProcessTree $process; [void]$process.WaitForExit(5000) }
         } catch { }
         $process.Dispose()
     }

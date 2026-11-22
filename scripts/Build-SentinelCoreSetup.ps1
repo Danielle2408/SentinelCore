@@ -27,6 +27,11 @@ function Reset-SafeDirectory([string]$path) {
     New-Item -ItemType Directory -Force -Path $fullPath | Out-Null
 }
 
+function Set-ProcessArguments([System.Diagnostics.ProcessStartInfo]$startInfo, [string[]]$arguments) {
+    $quoted = foreach ($argument in $arguments) { '"' + $argument.Replace('"', '\"') + '"' }
+    $startInfo.Arguments = [string]::Join(' ', [string[]]$quoted)
+}
+
 if (-not (Test-Path -LiteralPath $setupDefinition)) { throw "Définition Inno Setup absente : $setupDefinition" }
 if (-not (Test-Path -LiteralPath $innoCompiler)) { throw "ISCC.exe absent : installe Inno Setup 6.7.4 depuis https://jrsoftware.org/inno-setup/downloads" }
 if (-not (Test-Path -LiteralPath (Join-Path $workspaceRoot 'Control Center\Assets\SentinelCore.ico'))) { throw 'Icône SentinelCore.ico absente.' }
@@ -109,14 +114,14 @@ $compilerInfo = [System.Diagnostics.ProcessStartInfo]::new()
 $compilerInfo.FileName = $innoCompiler
 $compilerInfo.UseShellExecute = $false
 $compilerInfo.WorkingDirectory = $workspaceRoot
-foreach ($argument in @(
+Set-ProcessArguments $compilerInfo @(
     '/Q',
     "/DSourceRoot=$workspaceRoot",
     "/DPayloadDir=$payloadRoot",
     "/DModelsDir=$modelsRoot",
     "/DOutputDir=$outputRoot",
     $setupDefinition
-)) { [void]$compilerInfo.ArgumentList.Add($argument) }
+)
 
 $compiler = [System.Diagnostics.Process]::new()
 $compiler.StartInfo = $compilerInfo
