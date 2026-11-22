@@ -73,11 +73,13 @@ Déjà présent :
 
 Le modèle par défaut est `gemma3:1b`, avec boucle locale `127.0.0.1`, contexte de 4 096 jetons, jusqu’à 1 800 jetons générés et délai de 120 secondes. Le client sérialise les options Ollama sous leurs noms d’API (`num_ctx`, `num_predict`, `keep_alive`) et les tests inspectent ce JSON. Le centre permet de choisir un modèle déjà présent avec une taille locale positive; les noms `:cloud` et `-cloud` sont rejetés avant tout appel d’inférence. La connexion au compte Ollama/Google ne redirige pas une requête locale vers le cloud.
 
-Mesures réelles mises à jour le 21 novembre 2026, sur un cas synthétique identique, avec une machine CPU-only :
+Mesures comparatives initiales du 21 novembre 2026 sur un cas synthétique identique, avec une machine CPU-only :
 
 - `gemma3:1b` : avis accepté en 9,8 s, mais réponse en anglais, confiance 0,98 non étayée, hypothèse d’exfiltration sans preuve réseau et aucune demande de contexte alors que D1/D2 sont autorisés. Il est rapide, mais le verdict brut n’est pas fiable.
 - `gemma2:2b` : 43,8 s; réponse rejetée par D3 (`OLLAMA_UNSUPPORTED_VISUAL_INFERENCE`) après une interprétation qui contredit `visualStatus=NOT_REQUESTED`.
 - `gemma3:4b` : délai expiré à 120 s; l’essai a également rencontré des erreurs d’allocation mémoire quand d’autres modèles étaient chargés.
+
+Un contrôle complémentaire du 22 novembre a soumis `gemma3:1b` à un cas synthétique avec un finding D2 élevé, le champ `parentProcess` manquant et une application/horaire D1 habituels. En 25,1 s, le modèle a produit une affirmation non étayée sur l’absence d’un composant système; le validateur l’a rejetée (`OLLAMA_UNSUPPORTED_SYSTEM_COMPONENT_INFERENCE`) et D3 doit reprendre son repli déterministe. Un essai précédent sur le même jeu avait aussi présenté les habitudes D1 elles-mêmes comme une alerte; des garde-fous rejettent maintenant cette contradiction. La réponse de ce modèle n’est donc pas considérée fiable pour décider seule.
 
 Ces mesures ne sont pas des taux de précision et ne couvrent qu’un cas. Elles montrent que les modèles présents sur ce poste ne sont pas aptes à décider seuls d’une action de sécurité. Le contrôle D3 reste nécessaire : ses seuils techniques ne sont pas abaissés par une réponse faible, le mode d’action reste simulation/observation et les actions réelles sont protégées par autorisation.
 

@@ -75,7 +75,7 @@ dotnet test '.\Demon 3\DEMON 3\Demon3-Starter\tests\SentinelCore.Demon3.Tests\Se
 .\scripts\Verify-InterDaemonTransport.ps1
 ```
 
-D1 et D2 utilisent des exécutables de vérification console; D3 utilise xUnit. Le dernier audit a passé 93 contrôles D1, 19 groupes de contrôles D2 avec rejeu de 50 scénarios, et 53 tests D3. Ces nombres prouvent le comportement attendu face aux fixtures, pas la précision biométrique ou la performance de détection dans la nature. Le script de transport utilise des dossiers temporaires et vérifie un véritable échange local D2→D3; il ne lance pas la caméra ni une action de remédiation.
+D1 et D2 utilisent des exécutables de vérification console; D3 utilise xUnit. Le dernier audit a passé 93 contrôles D1, 19 groupes de contrôles D2 avec rejeu de 50 scénarios, et 64 tests D3. Ces nombres prouvent le comportement attendu face aux fixtures, pas la précision biométrique ou la performance de détection dans la nature. Le script de transport utilise des dossiers temporaires et vérifie un véritable échange local D2→D3; il ne lance pas la caméra ni une action de remédiation.
 
 Les capacités et limites par rapport aux outils existants sont détaillées dans [`COMPARAISON_SOLUTIONS.md`](COMPARAISON_SOLUTIONS.md). Chaque module possède son propre guide : [D1](<Demon 1/README.md>), [D2](<Demon 2/README.md>), [D3](<Demon 3/DEMON 3/Demon3-Starter/README.md>) et [Centre de contrôle](<Control Center/README.md>).
 

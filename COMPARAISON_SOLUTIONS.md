@@ -22,8 +22,8 @@ Sysmon fournit des faits techniques, pas un verdict. Une chaîne telle que déma
 
 - Les contrôles D1 couvrent les règles, l’isolation des profils, les contrats de message et 50 cas publiés de test. Le compte de contrôles n’est pas un taux de reconnaissance biométrique.
 - D2 rejoue 50 scénarios synthétiques avec les sorties attendues. Le résultat 50/50 signifie que le code concorde avec ces fixtures; il ne mesure pas le taux de détection sur des logiciels malveillants réels.
-- D3 possède des tests de contrat, de décision, de persistance, d’autorisation, d’IA simulée et de notifications. Le résultat 53/53 n’est pas un score de justesse d’Ollama.
-- Un unique micro-essai local D2 a traité 256 événements synthétiques à environ 270 événements par seconde. Il s’agit d’une mesure exploratoire d’un pipeline court sur un poste et non d’un benchmark comparable à Defender ou à un EDR.
+- D3 possède des tests de contrat, de décision, de persistance, d’autorisation, d’IA simulée et de notifications. Le résultat 64/64 n’est pas un score de justesse d’Ollama.
+- Le dernier micro-essai local D2 a traité 256 événements synthétiques à environ 468 événements par seconde. Il s’agit d’une mesure exploratoire d’un pipeline court sur un poste et non d’un benchmark comparable à Defender ou à un EDR.
 
 Il n’existe donc pas de pourcentage de performance honnête à donner face à Defender ou Defender for Endpoint : il manque un corpus représentatif commun, des étiquettes indépendantes, un protocole reproductible, des mesures de faux positifs/faux négatifs, plusieurs postes et plusieurs profils utilisateurs. Les chiffres de tests ci-dessus ne doivent pas être présentés comme une efficacité antivirus.
 
