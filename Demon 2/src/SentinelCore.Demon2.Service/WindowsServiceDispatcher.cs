@@ -43,10 +43,60 @@ internal static class WindowsServiceDispatcher
         Console.CancelKeyPress += cancelHandler;
         try
         {
-            try { worker(cts.Token).GetAwaiter().GetResult(); }
+            try { RunForegroundAsync(worker, cts).GetAwaiter().GetResult(); }
             catch (OperationCanceledException) when (cts.IsCancellationRequested) { }
         }
         finally { Console.CancelKeyPress -= cancelHandler; }
+    }
+
+    private static async Task RunForegroundAsync(Func<CancellationToken, Task> worker, CancellationTokenSource stop)
+    {
+        var workerTask = worker(stop.Token);
+        var inputTask = WaitForStopInputAsync(Console.In, stop);
+        try
+        {
+            var completed = await Task.WhenAny(workerTask, inputTask).ConfigureAwait(false);
+            if (completed == inputTask)
+            {
+                await inputTask.ConfigureAwait(false);
+                if (stop.IsCancellationRequested) await workerTask.ConfigureAwait(false);
+            }
+            else
+            {
+                await workerTask.ConfigureAwait(false);
+                stop.Cancel();
+                await inputTask.ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            if (!stop.IsCancellationRequested) stop.Cancel();
+        }
+    }
+
+    internal static async Task WaitForStopInputAsync(TextReader input, CancellationTokenSource stop)
+    {
+        try
+        {
+            while (!stop.IsCancellationRequested)
+            {
+                var line = await input.ReadLineAsync(stop.Token).ConfigureAwait(false);
+                if (line is null)
+                {
+                    // The Centre owns this redirected input stream. Its process can close while
+                    // the user explicitly keeps D2 running, so EOF must not stop the monitor.
+                    await Task.Delay(Timeout.InfiniteTimeSpan, stop.Token).ConfigureAwait(false);
+                    return;
+                }
+                if (string.Equals(line.Trim(), "STOP", StringComparison.OrdinalIgnoreCase))
+                {
+                    stop.Cancel();
+                    return;
+                }
+            }
+        }
+        catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
+        catch (IOException) when (stop.IsCancellationRequested) { }
     }
 
     private static void ServiceMain(uint argc, IntPtr argv)

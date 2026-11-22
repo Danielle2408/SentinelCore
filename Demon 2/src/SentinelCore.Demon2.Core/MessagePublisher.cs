@@ -25,11 +25,21 @@ public static class InterDaemonEnvelopeFactory
         DateTimeOffset deadlineUtc)
     {
         var allowed = new HashSet<string>(StringComparer.Ordinal) { "sessionState", "localOrRemote", "recentAuthBand" };
-        if (requestedFields.Count == 0 || requestedFields.Any(x => !allowed.Contains(x)))
+        ArgumentException.ThrowIfNullOrWhiteSpace(correlationId);
+        if (correlationId.Length > 128 || requestedFields.Count == 0 || requestedFields.Count > allowed.Count
+            || requestedFields.Any(x => !allowed.Contains(x))
+            || requestedFields.Distinct(StringComparer.Ordinal).Count() != requestedFields.Count)
             throw new ArgumentException("Only allowlisted session context fields may be requested.", nameof(requestedFields));
-        return Make(correlationId, "SESSION_CONTEXT_REQUEST", DateTimeOffset.UtcNow, deadlineUtc,
-            new { requestedFields = requestedFields.Distinct(StringComparer.Ordinal).ToArray(), deadlineUtc });
+        var now = DateTimeOffset.UtcNow;
+        deadlineUtc = deadlineUtc.ToUniversalTime();
+        if (deadlineUtc <= now || deadlineUtc > now.AddMinutes(1))
+            throw new ArgumentOutOfRangeException(nameof(deadlineUtc), "Session context deadline must be within one minute.");
+        return Make(correlationId, "SESSION_CONTEXT_REQUEST", now, deadlineUtc,
+            new { requestedFields = requestedFields.ToArray(), deadlineUtc });
     }
+
+    public static InterDaemonEnvelope ForThreatContextResponse(string correlationId, ThreatContextResponse response,
+        DateTimeOffset nowUtc) => Make(correlationId, "CONTEXT_RESPONSE", nowUtc, nowUtc.AddSeconds(30), response);
 
     public static InterDaemonEnvelope Heartbeat(string correlationId, EventSourceHealth health, int outboxDepth, DateTimeOffset nowUtc) => Make(
         correlationId, "HEARTBEAT", nowUtc, nowUtc.AddSeconds(30), new { status = health.State.ToString(),
@@ -47,7 +57,7 @@ public static class InterDaemonEnvelopeValidator
     public static bool TryValidate(InterDaemonEnvelope message, DateTimeOffset nowUtc, out string? error)
     {
         error = null;
-        if (message.MessageId == Guid.Empty || string.IsNullOrWhiteSpace(message.CorrelationId)) error = "messageId and correlationId are required.";
+        if (message.MessageId == Guid.Empty || string.IsNullOrWhiteSpace(message.CorrelationId) || message.CorrelationId.Length > 128 || message.CorrelationId.Any(char.IsControl)) error = "messageId and a bounded correlationId are required.";
         else if (message.SourceDaemon != "ThreatMonitor" || message.Destination != "RiskResponseGuard") error = "Invalid D2 route.";
         else if (message.SchemaVersion != 1 || !AllowedTypes.Contains(message.MessageType)) error = "Unsupported schema or message type.";
         else if (message.TimestampUtc.Offset != TimeSpan.Zero || message.ExpiresAtUtc.Offset != TimeSpan.Zero) error = "Envelope timestamps must be UTC.";
@@ -90,13 +100,117 @@ public static class InterDaemonEnvelopeValidator
                 break;
             case "TELEMETRY_GAP": if (Missing(Str("gapId") && Str("source") && Str("reason") && NonNegative("droppedCount") && ArrayOfStrings("missingFields"), "required gap fields are invalid")) { error = payloadError; return false; } break;
             case "HEARTBEAT": if (Missing(Str("status") && NonNegative("queueDepth") && NonNegative("outboxDepth") && NonNegative("droppedCount"), "required heartbeat fields are invalid")) { error = payloadError; return false; } break;
-            case "SESSION_CONTEXT_REQUEST": if (Missing(ArrayOfStrings("requestedFields", true) && Utc("deadlineUtc") && p.GetProperty("requestedFields").EnumerateArray().All(x => new[] { "sessionState", "localOrRemote", "recentAuthBand" }.Contains(x.GetString(), StringComparer.Ordinal)), "requested fields or UTC deadline are invalid")) { error = payloadError; return false; } break;
+            case "SESSION_CONTEXT_REQUEST":
+                if (Missing(ArrayOfStrings("requestedFields", true) && p.GetProperty("requestedFields").GetArrayLength() <= 3
+                    && Utc("deadlineUtc") && DateTimeOffset.Parse(p.GetProperty("deadlineUtc").GetString()!, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind) > DateTimeOffset.UtcNow
+                    && p.GetProperty("requestedFields").EnumerateArray().All(x => new[] { "sessionState", "localOrRemote", "recentAuthBand" }.Contains(x.GetString(), StringComparer.Ordinal))
+                    && p.GetProperty("requestedFields").EnumerateArray().Select(x => x.GetString()).Distinct(StringComparer.Ordinal).Count() == p.GetProperty("requestedFields").GetArrayLength(),
+                    "requested fields or UTC deadline are invalid")) { error = payloadError; return false; }
+                break;
             case "HELLO": if (Missing(Str("daemonId") && Positive("supportedSchema") && ArrayOfStrings("capabilities"), "required handshake fields are invalid")) { error = payloadError; return false; } break;
-            case "CONTEXT_RESPONSE": break;
+            case "CONTEXT_RESPONSE": return ValidThreatContextResponse(p, out error);
         }
         error = payloadError;
         return true;
     }
+
+    private static bool ValidThreatContextResponse(JsonElement payload, out string? error)
+    {
+        error = "Invalid CONTEXT_RESPONSE payload.";
+        bool Utc(string name) => payload.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+            && DateTimeOffset.TryParse(value.GetString(), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var parsed)
+            && parsed.Offset == TimeSpan.Zero;
+        if (!Utc("observedAtUtc") || !payload.TryGetProperty("found", out var found) || found.ValueKind is not (JsonValueKind.True or JsonValueKind.False)
+            || !payload.TryGetProperty("requestedFields", out var requested) || requested.ValueKind != JsonValueKind.Array
+            || requested.GetArrayLength() is < 1 or > 4
+            || !requested.EnumerateArray().All(x => x.ValueKind == JsonValueKind.String && x.GetString() is { } field && ThreatContextFields.All.Contains(field))
+            || requested.EnumerateArray().Select(x => x.GetString()).Distinct(StringComparer.Ordinal).Count() != requested.GetArrayLength()
+            || !payload.TryGetProperty("findings", out var findings) || findings.ValueKind != JsonValueKind.Array
+            || findings.GetArrayLength() > 20 || (found.GetBoolean() != (findings.GetArrayLength() > 0)))
+            return false;
+
+        var fieldSet = requested.EnumerateArray().Select(x => x.GetString()!).ToHashSet(StringComparer.Ordinal);
+        foreach (var finding in findings.EnumerateArray())
+        {
+            if (finding.ValueKind != JsonValueKind.Object || !HasExactProperties(finding,
+                    ["findingId", "summary", "ruleDetails", "evidenceRefs", "evidenceKinds", "missingTelemetry"])) return false;
+            if (!IsSafeContextToken(finding, "findingId", 96)) return false;
+            if (fieldSet.Contains(ThreatContextFields.FindingSummary))
+            {
+                if (!IsSafeContextText(finding, "summary", 500)) return false;
+            }
+            else if (finding.GetProperty("summary").ValueKind != JsonValueKind.Null) return false;
+
+            var details = finding.GetProperty("ruleDetails");
+            if (fieldSet.Contains(ThreatContextFields.RuleDetails))
+            {
+                if (details.ValueKind != JsonValueKind.Object || !HasExactProperties(details, ["ruleId", "ruleVersion", "severity", "confidence", "facts"])
+                    || !IsSafeContextToken(details, "ruleId", 64)
+                    || !details.TryGetProperty("ruleVersion", out var version) || !version.TryGetInt32(out var ruleVersion) || ruleVersion < 1
+                    || !details.TryGetProperty("severity", out var severity) || severity.ValueKind != JsonValueKind.String
+                    || !Enum.TryParse<ThreatSeverity>(severity.GetString(), false, out var parsedSeverity) || !Enum.IsDefined(parsedSeverity)
+                    || !details.TryGetProperty("confidence", out var confidence) || confidence.ValueKind != JsonValueKind.Number
+                    || !double.IsFinite(confidence.GetDouble()) || confidence.GetDouble() is < 0 or > 1
+                    || !details.TryGetProperty("facts", out var facts) || !ValidContextFacts(facts)) return false;
+            }
+            else if (details.ValueKind != JsonValueKind.Null) return false;
+
+            var refs = finding.GetProperty("evidenceRefs");
+            var kinds = finding.GetProperty("evidenceKinds");
+            if (fieldSet.Contains(ThreatContextFields.EvidenceKinds))
+            {
+                if (!ValidContextStringArray(refs, 32, 96, IsSafeToken)
+                    || refs.EnumerateArray().Select(x => x.GetString()).Distinct(StringComparer.Ordinal).Count() != refs.GetArrayLength()
+                    || !ValidContextStringArray(kinds, 32, 48, (value, _) => IsThreatEventType(value))
+                    || refs.GetArrayLength() != kinds.GetArrayLength()) return false;
+            }
+            else if (refs.ValueKind != JsonValueKind.Null || kinds.ValueKind != JsonValueKind.Null) return false;
+
+            var missing = finding.GetProperty("missingTelemetry");
+            if (fieldSet.Contains(ThreatContextFields.MissingTelemetry))
+            {
+                if (!ValidContextStringArray(missing, 32, 64, IsSafeToken)) return false;
+            }
+            else if (missing.ValueKind != JsonValueKind.Null) return false;
+        }
+        error = null;
+        return true;
+    }
+
+    private static bool HasExactProperties(JsonElement value, params string[] expected)
+        => value.EnumerateObject().Select(x => x.Name).ToHashSet(StringComparer.Ordinal).SetEquals(expected)
+            && value.EnumerateObject().Count() == expected.Length;
+
+    private static bool IsSafeContextToken(JsonElement parent, string name, int maximumLength)
+        => parent.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+            && IsSafeToken(value.GetString(), maximumLength);
+
+    private static bool IsSafeContextText(JsonElement parent, string name, int maximumLength)
+        => parent.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+            && !string.IsNullOrWhiteSpace(value.GetString()) && value.GetString()!.Length <= maximumLength
+            && !value.GetString()!.Any(char.IsControl);
+
+    private static bool ValidContextFacts(JsonElement facts)
+    {
+        if (facts.ValueKind != JsonValueKind.Array || facts.GetArrayLength() > 32) return false;
+        foreach (var fact in facts.EnumerateArray())
+        {
+            if (fact.ValueKind != JsonValueKind.Object || !HasExactProperties(fact, ["name", "value"])
+                || !IsSafeContextToken(fact, "name", 64) || !IsSafeContextToken(fact, "value", 64)) return false;
+        }
+        return true;
+    }
+
+    private static bool ValidContextStringArray(JsonElement value, int maximumCount, int maximumLength, Func<string?, int, bool> validator)
+        => value.ValueKind == JsonValueKind.Array && value.GetArrayLength() <= maximumCount
+            && value.EnumerateArray().All(x => x.ValueKind == JsonValueKind.String && validator(x.GetString(), maximumLength));
+
+    private static bool IsThreatEventType(string? value)
+        => Enum.TryParse<ThreatEventType>(value, false, out var parsed) && Enum.IsDefined(parsed);
+
+    private static bool IsSafeToken(string? value, int maximumLength = 96)
+        => !string.IsNullOrWhiteSpace(value) && value.Length <= maximumLength
+            && value.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.' or ':');
 }
 
 public sealed class JsonlInterDaemonBus(string filePath) : IInterDaemonBus

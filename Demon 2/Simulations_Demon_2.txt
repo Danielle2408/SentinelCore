@@ -1,0 +1,276 @@
+DEMON 2 — CATALOGUE DE 50 SIMULATIONS
+Base : Demon2_Training.sqlite
+Toutes les données sont fictives. Les scénarios ne lancent aucun fichier et ne génèrent aucun trafic réel.
+Les événements servent à rejouer et évaluer Threat Monitor; le démon 2 publie un constat, le démon 3 décide des actions.
+
+CAS 01 — Agent de développement nocturne
+Catégorie : Bénin | Étiquette attendue : benign
+Simulation : IDE → terminal → agent de code → dépendances connues; écritures dans le projet.
+Résultat attendu : Aucun finding de menace; rapport informatif.
+
+CAS 02 — Mise à jour signée
+Catégorie : Bénin | Étiquette attendue : benign
+Simulation : Service de mise à jour signé → fichiers applicatifs → domaine éditeur connu.
+Résultat attendu : Aucun finding; chaîne cohérente.
+
+CAS 03 — Installation utilisateur autorisée
+Catégorie : Bénin | Étiquette attendue : benign
+Simulation : Explorateur → installateur signé → fichiers Program Files.
+Résultat attendu : Activité attendue; pas de persistance suspecte.
+
+CAS 04 — Compilation de projet
+Catégorie : Bénin | Étiquette attendue : benign
+Simulation : IDE → compilateur → nombreux artefacts dans bin/obj.
+Résultat attendu : Volume élevé contextualisé; pas de menace.
+
+CAS 05 — Sauvegarde locale
+Catégorie : Bénin | Étiquette attendue : benign
+Simulation : Service de sauvegarde → lecture puis écriture de fichiers autorisés.
+Résultat attendu : Activité normale.
+
+CAS 06 — Navigateur met à jour ses composants
+Catégorie : Bénin | Étiquette attendue : benign
+Simulation : Navigateur → updater signé → hôte de mise à jour connu.
+Résultat attendu : Activité normale.
+
+CAS 07 — Administration par PowerShell légitime
+Catégorie : Bénin | Étiquette attendue : benign
+Simulation : Terminal interactif → script signé fourni par administrateur labo.
+Résultat attendu : Pas d’alerte élevée; contexte conservé.
+
+CAS 08 — Outil de synchronisation
+Catégorie : Bénin | Étiquette attendue : benign
+Simulation : Client signé → synchronisation d’un dossier de test vers service connu.
+Résultat attendu : Activité attendue.
+
+CAS 09 — Antivirus lance une analyse
+Catégorie : Bénin | Étiquette attendue : benign
+Simulation : Service Defender → lecture de nombreux fichiers.
+Résultat attendu : Ne pas signaler comme rafale malveillante.
+
+CAS 10 — Création de fichiers par éditeur
+Catégorie : Bénin | Étiquette attendue : benign
+Simulation : Éditeur utilisateur → fichiers temporaires connus dans workspace.
+Résultat attendu : Bruit bénin filtré.
+
+CAS 11 — Tâche planifiée de maintenance
+Catégorie : Bénin | Étiquette attendue : benign
+Simulation : Processus signé → tâche connue → journal local.
+Résultat attendu : Pas de finding.
+
+CAS 12 — Téléchargement documenté
+Catégorie : Bénin | Étiquette attendue : benign
+Simulation : Navigateur → fichier de test non exécutable; aucune exécution.
+Résultat attendu : Observation faible seulement.
+
+CAS 13 — Connexion DNS fréquente à service connu
+Catégorie : Bénin | Étiquette attendue : benign
+Simulation : Application connue → DNS et connexion vers domaine de test fiable.
+Résultat attendu : Pas de réputation malveillante inférée.
+
+CAS 14 — Redémarrage d’un service logiciel
+Catégorie : Bénin | Étiquette attendue : benign
+Simulation : Service installé connu s’arrête et redémarre après mise à jour.
+Résultat attendu : Pas de neutralisation suspecte.
+
+CAS 15 — Développement agent IA supervisé
+Catégorie : Bénin | Étiquette attendue : benign
+Simulation : IDE → assistant de code → commandes build dans dépôt de test; aucun comportement destructif.
+Résultat attendu : Profil logiciel contextualisé, pas de menace.
+
+CAS 16 — Téléchargement puis interpréteur
+Catégorie : Suspect | Étiquette attendue : suspicious
+Simulation : Navigateur → téléchargement exécutable sandbox → script-host enfant → domaine rare.
+Résultat attendu : Finding élevé: download_chain + script_child + network.
+
+CAS 17 — Office lance un interpréteur
+Catégorie : Suspect | Étiquette attendue : suspicious
+Simulation : Document de test → Office → script-host; commande simulée.
+Résultat attendu : Finding élevé, preuves parent/enfant.
+
+CAS 18 — Binaire inconnu écrit au démarrage
+Catégorie : Suspect | Étiquette attendue : suspicious
+Simulation : Processus non signé → fichier sandbox/Startup/demo.bin → événement persistance fixture.
+Résultat attendu : Finding élevé: drop_then_persistence.
+
+CAS 19 — Rafale fichiers sandbox
+Catégorie : Suspect | Étiquette attendue : suspicious
+Simulation : Processus simulé modifie 120 fichiers factices en 10 secondes.
+Résultat attendu : Finding élevé selon la règle de rafale; signaler au Guard, pas d’action ici.
+
+CAS 20 — PowerShell depuis processus inattendu
+Catégorie : Suspect | Étiquette attendue : suspicious
+Simulation : Application de document → PowerShell; séquence de test inoffensive.
+Résultat attendu : Finding élevé si corroboré.
+
+CAS 21 — Connexion externe après écriture suspecte
+Catégorie : Suspect | Étiquette attendue : suspicious
+Simulation : Processus inconnu crée fichier puis connexion vers domaine test rare.
+Résultat attendu : Corrélation multi-signal.
+
+CAS 22 — Tâche planifiée inconnue
+Catégorie : Suspect | Étiquette attendue : suspicious
+Simulation : Nouveau processus → tâche planifiée fixture; parent non attendu.
+Résultat attendu : Finding élevé.
+
+CAS 23 — Clé Run modifiée par binaire non signé
+Catégorie : Suspect | Étiquette attendue : suspicious
+Simulation : Binaire inconnu → changement registre simulé.
+Résultat attendu : Finding élevé avec événement registre.
+
+CAS 24 — Script lancé depuis dossier temporaire
+Catégorie : Suspect | Étiquette attendue : suspicious
+Simulation : Archive de test → script dans Temp → connexion sortante simulée.
+Résultat attendu : Finding moyen/élevé selon corroboration.
+
+CAS 25 — Exécutable téléchargé puis lancé
+Catégorie : Suspect | Étiquette attendue : suspicious
+Simulation : Navigateur → executable factice marqué internet → lancement immédiat.
+Résultat attendu : Finding élevé, chaîne complète.
+
+CAS 26 — Processus tente de désactiver journalisation
+Catégorie : Suspect | Étiquette attendue : suspicious
+Simulation : Processus test → événement d’altération de configuration simulé.
+Résultat attendu : Finding élevé; source et preuve.
+
+CAS 27 — Processus inconnu charge DLL inhabituelle
+Catégorie : Suspect | Étiquette attendue : suspicious
+Simulation : Sysmon signale une DLL non signée chargée depuis Downloads, puis une connexion synthétique du même processus.
+Résultat attendu : Finding élevé seulement avec signature/path et corroboration du processus.
+
+
+CAS 28 — Accès anormal à processus sensible
+Catégorie : Suspect | Étiquette attendue : suspicious
+Simulation : Un processus de test ouvre LSASS avec le masque 0x1010, puis réalise une connexion synthétique liée au même processus.
+Résultat attendu : Finding élevé seulement si cible, masque et corroboration sont présents.
+
+
+CAS 29 — DNS inhabituel et répétitif
+Catégorie : Suspect | Étiquette attendue : suspicious
+Simulation : Processus rare fait des requêtes répétées vers domaine réservé test.
+Résultat attendu : Finding moyen; corrélation temporelle.
+
+CAS 30 — Téléchargement suivi de persistance
+Catégorie : Suspect | Étiquette attendue : suspicious
+Simulation : Téléchargement sandbox → exécution → tâche fixture.
+Résultat attendu : Finding élevé multi-étape.
+
+CAS 31 — Programme inconnu lit puis archive données test
+Catégorie : Suspect | Étiquette attendue : suspicious
+Simulation : Processus inconnu → fichiers factices → archive sandbox → connexion synthétique vers example.test; aucun trafic réel.
+Résultat attendu : Finding élevé après la séquence complète; le rapport cite les trois événements synthétiques.
+
+CAS 32 — Exfiltration simulée
+Catégorie : Suspect | Étiquette attendue : suspicious
+Simulation : Processus de test lit un fichier factice, puis émet un événement réseau synthétique vers example.test; aucun trafic réel.
+Résultat attendu : Finding élevé par la règle déterministe de corrélation; le scénario ne génère aucun trafic réel.
+
+CAS 33 — Plusieurs interpréteurs imbriqués
+Catégorie : Suspect | Étiquette attendue : suspicious
+Simulation : Processus inconnu → shell → script host → second shell, fixture seulement.
+Résultat attendu : Finding élevé.
+
+CAS 34 — Fichier exécutable créé dans dossier public
+Catégorie : Suspect | Étiquette attendue : suspicious
+Simulation : Processus non signé écrit binaire factice dans répertoire partage sandbox.
+Résultat attendu : Finding moyen/élevé selon exécution.
+
+CAS 35 — Événements cohérents ransomware simulé
+Catégorie : Suspect | Étiquette attendue : suspicious
+Simulation : Processus simulator → changements rapides de fichiers factices, aucune donnée réelle.
+Résultat attendu : Finding élevé par la règle déterministe de rafale; route vers Guard.
+
+CAS 36 — Ligne de commande absente
+Catégorie : Ambigu | Étiquette attendue : uncertain
+Simulation : Événement process sans command line ni parent.
+Résultat attendu : Uncertain; TelemetryGap, pas de verdict.
+
+CAS 37 — Parent introuvable
+Catégorie : Ambigu | Étiquette attendue : uncertain
+Simulation : Connexion réseau associée à PID sans création de processus correspondante.
+Résultat attendu : Demander enrichissement/attendre corrélation.
+
+CAS 38 — Domaine jamais vu mais application connue
+Catégorie : Ambigu | Étiquette attendue : uncertain
+Simulation : Processus signé contacte domaine nouveau de test.
+Résultat attendu : Risque moyen incertain, enrichir réputation.
+
+CAS 39 — Binaire non signé dans outil portable
+Catégorie : Ambigu | Étiquette attendue : uncertain
+Simulation : Outil portable non signé lancé depuis Downloads; la réputation de l’éditeur est manquante, sans autre signal.
+Résultat attendu : NEEDS_CONTEXT; ne pas confirmer une menace.
+
+CAS 40 — Heure inhabituelle mais chaîne légitime
+Catégorie : Ambigu | Étiquette attendue : uncertain
+Simulation : Mise à jour signée la nuit.
+Résultat attendu : Observation; l’heure inhabituelle seule ne déclenche aucun finding ni demande de contexte.
+
+CAS 41 — Volume fichiers sans processus source
+Catégorie : Ambigu | Étiquette attendue : uncertain
+Simulation : Événements de fichiers en rafale mais PID absent.
+Résultat attendu : Incomplet; signaler source manquante.
+
+CAS 42 — Mention textuelle d’une alerte Defender ancienne
+Catégorie : Ambigu | Étiquette attendue : uncertain
+Simulation : Une note de test ne contient aucun événement Defender 1116/1117 structuré.
+Résultat attendu : Observation; le texte libre ne devient pas une détection active.
+
+CAS 43 — Événement Sysmon dupliqué
+Catégorie : Ambigu | Étiquette attendue : uncertain
+Simulation : Même sourceEventId livré deux fois.
+Résultat attendu : Une seule copie est persistée après déduplication; aucun finding n’est généré.
+
+CAS 44 — Horodatage hors ordre
+Catégorie : Ambigu | Étiquette attendue : uncertain
+Simulation : La connexion arrive dans le flux avant le démarrage du même processus; son horodatage UTC est plus récent et aucun autre signal suspect n’est présent.
+Résultat attendu : Observation sans finding; l’ordre UTC et l’ordre de livraison restent distincts.
+
+CAS 45 — Service inconnu mais signé
+Catégorie : Ambigu | Étiquette attendue : uncertain
+Simulation : Service signé par éditeur jamais rencontré.
+Résultat attendu : Inconnu; réputation/contexte manquant.
+
+CAS 46 — Domaine connu, processus étrange
+Catégorie : Ambigu | Étiquette attendue : uncertain
+Simulation : Host connu mais initiateur inattendu.
+Résultat attendu : Ne pas autoriser sur réputation seule.
+
+CAS 47 — Script d’administration sans utilisateur
+Catégorie : Ambigu | Étiquette attendue : uncertain
+Simulation : Script signé mais session inconnue.
+Résultat attendu : Demander contexte au démon 1/Guard.
+
+CAS 48 — Capteur réseau indisponible
+Catégorie : Ambigu | Étiquette attendue : uncertain
+Simulation : Processus suspect détecté mais source réseau arrêtée.
+Résultat attendu : Finding avec missingTelemetry.
+
+CAS 49 — Hash absent
+Catégorie : Ambigu | Étiquette attendue : uncertain
+Simulation : Fichier suspect sans hash calculé.
+Résultat attendu : Émettre finding incomplet; hash à calculer à la demande.
+
+CAS 50 — Téléchargement sans exécution observée
+Catégorie : Ambigu | Étiquette attendue : uncertain
+Simulation : Un fichier de test porte Zone.Identifier; aucune exécution ni activité de corroboration ne suit pendant la fenêtre de corrélation.
+Résultat attendu : Observation, sans finding.
+
+
+CONTRAT COMMUN INTER-DÉMONS V1
+Transport produit : Named Pipe locale \\.\pipe\SentinelCore.Guard, hébergée par le démon 3. Connexion locale uniquement, ACL explicites limitées aux comptes de service SentinelCore; refuser clients anonymes/inconnus et accès réseau. D1 et D2 sont clients. Pour tests, utiliser un transport JSONL (un message JSON par ligne) derrière l’interface commune IInterDaemonBus; le contenu et l’ordre des messages restent identiques au transport produit.
+
+Enveloppe obligatoire : messageId (UUID), correlationId (UUID ou ID d’affaire), timestampUtc (ISO-8601 UTC), sourceDaemon (HumanBehaviorMonitor | ThreatMonitor | RiskResponseGuard), destination (RiskResponseGuard | HumanBehaviorMonitor | ThreatMonitor), messageType, schemaVersion=1, expiresAtUtc (ISO-8601 UTC), payload (objet JSON). Limite commune : 64 KiB par message UTF-8 avant framing. Les messages sur le pipe sont précédés d’un entier longueur; JSONL utilise une ligne complète. Refuser payload invalide, champ requis absent, version inconnue, message expiré ou source non authentifiée.
+
+Handshake : D1/D2 -> D3 HELLO; D3 -> client WELCOME avec sessionId et supportedSchema. Chaque message reçu est ACK(messageId, status=ACCEPTED|REJECTED|DUPLICATE, reason?). D3 déduplique messageId. Émetteur retente au plus 3 fois avec backoff borné; pas de retry après expiration.
+
+Types v1 : HELLO, WELCOME, HEARTBEAT, USER_CONTEXT (D1->D3), BEHAVIOR_DEVIATION (D1->D3), THREAT_FINDING (D2->D3), TELEMETRY_GAP (D2->D3), SESSION_CONTEXT_REQUEST (D2->D3), SESSION_CONTEXT_RESPONSE (D1->D3 via D3), CONTEXT_REQUEST (D3->D1/D2), CONTEXT_RESPONSE (D1/D2->D3), MASTER_AUTH_REQUIRED (D3->D1/UI), MASTER_AUTH_RESULT (D1->D3), ACTION_REQUEST (D3->adaptateur interne seulement), ACTION_RESULT (adaptateur->D3). D1/D2 rejettent ACTION_REQUEST.
+
+Extension v1 D1↔D3 pour caméra : VISUAL_IDENTITY_REQUEST, VISUAL_IDENTITY_RESPONSE, VISUAL_EVIDENCE_READ_REQUEST, VISUAL_EVIDENCE_CHUNK. La requête est déclenchée par D3 pour ALERT/SUSPICION/REPORT et peut durer au plus 60s; D3 traite les alertes D2 en parallèle. La photo est gardée localement chiffrée par D1, et transférée par morceaux <=24 KiB uniquement après une demande D3 avec evidenceRef valide. D1 transmet au rapport le profil candidat interne facultatif, MATCH/NO_MATCH/INDETERMINATE, liveness, qualité, motif et référence, jamais le gabarit facial. Une fois copiée dans le rapport, la photo reste dans ce rapport si la preuve source est purgée.
+
+USER_CONTEXT et BEHAVIOR_DEVIATION de D1 peuvent inclure le résumé de contexte d’application : nom de processus sans chemin, heure/jour locaux, durée au premier plan, historique d’usage, CPU, mémoire et âge de l’échantillon (<5 minutes). Cela décrit l’habitude de l’utilisateur, pas la sûreté technique du processus. D2 ne reçoit jamais profil, métriques clavier/souris ou données faciales; D3 conserve ses signaux D2 séparément.
+
+Relais de contexte : D2 envoie SESSION_CONTEXT_REQUEST au Guard avec correlationId, champs demandés parmi sessionState, localOrRemote, recentAuthBand, deadlineUtc. D3 vérifie allowlist et consentement, crée CONTEXT_REQUEST à D1, attend au plus 2 secondes (configurable), puis transmet à D2 une CONTEXT_RESPONSE via son pipe avec la même correlationId; en absence de réponse, statut NOT_AVAILABLE. D2 ne reçoit jamais profil, métriques de frappe/souris, caméra, identité faciale, nom utilisateur ni secret. Autres demandes D3->D1/D2 suivent le même délai, expiration et whitelist.
+
+Action : ACTION_REQUEST n’est pas un message inter-démon routé. D3 appelle uniquement son ActionCatalog interne avec actionType enum, arguments typés et allowlist, policyId/version, evidenceRefs, approvalRef?, idempotencyKey, deadlineUtc. Les actions sont simulées par défaut. Aucun shell/PowerShell arbitraire, chemin non validé ou contenu IA n’est exécutable.
+
+Pannes : chaque démon publie HEARTBEAT toutes les 10 secondes; après 30 secondes sans heartbeat D3 marque le démon DEGRADED. Files d’attente bornées, jamais bloquer les collecteurs. D3 continue ses règles déterministes sans Ollama; si D1 est indisponible, poursuivre l’analyse D2 sans le signal humain; si D2 manque, un signal D1 seul ne peut pas déclencher une action destructive. Tous les délais, rejets, pertes, décisions et résultats sont journalisés.

@@ -22,13 +22,20 @@ public sealed class ThreatMonitorPipeline(
         var heartbeat = HeartbeatLoopAsync(token);
         var healthTask = HealthLoopAsync(token, sourceOutages);
         var retentionTask = RetentionLoopAsync(token);
+        var requestTask = bus is IRequestReceivingInterDaemonBus requestBus
+            ? new ThreatDetailsContextResponder(store, requestBus, Clock).RunAsync(token)
+            : Task.CompletedTask;
+        var sessionRelay = bus is ISessionContextResponseReceivingInterDaemonBus sessionResponseBus
+            ? new SessionContextRelay(store, sessionResponseBus, Clock)
+            : null;
+        var sessionResponseTask = sessionRelay?.RunAsync(token) ?? Task.CompletedTask;
         try
         {
             await foreach (var raw in source.ReadAllAsync(token).WithCancellation(token))
             {
                 if (raw.SourceError is { } sourceError)
                 {
-                    var gap = new TelemetryGap(Guid.NewGuid().ToString("N"), source.Name, Clock.GetUtcNow(),
+                    var gap = new TelemetryGap(Guid.NewGuid().ToString("N"), raw.SourceName, Clock.GetUtcNow(),
                         "Telemetry source reported temporary unavailability.", 0, ["source_available"]);
                     var firstGapForEpisode = sourceOutages.TryBegin(gap);
                     if (firstGapForEpisode is not null)
@@ -48,28 +55,28 @@ public sealed class ThreatMonitorPipeline(
                 }
                 if (!normalized || item is null)
                 {
-                    Console.Error.WriteLine("Sysmon event rejected during normalization.");
+                    Console.Error.WriteLine($"{raw.SourceName} event rejected during normalization.");
                     var bookmarkIsBounded = raw.BookmarkXml is { Length: > 0 and <= SysmonEventNormalizer.MaxBookmarkCharacters };
                     var poisonIdentity = bookmarkIsBounded ? raw.BookmarkXml! : Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
                         System.Text.Encoding.UTF8.GetBytes(raw.Xml))).ToLowerInvariant();
                     var gapId = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
-                        System.Text.Encoding.UTF8.GetBytes($"{source.Name}|malformed|{poisonIdentity}"))).ToLowerInvariant();
+                        System.Text.Encoding.UTF8.GetBytes($"{raw.SourceName}|malformed|{poisonIdentity}"))).ToLowerInvariant();
                     var missingFields = bookmarkIsBounded || raw.BookmarkXml is null ? new[] { "normalizedEvent" } : new[] { "normalizedEvent", "sourceCursor" };
-                    await PublishGapAsync(new TelemetryGap(gapId, source.Name, Clock.GetUtcNow(),
+                    await PublishGapAsync(new TelemetryGap(gapId, raw.SourceName, Clock.GetUtcNow(),
                         "Observed source record was rejected during normalization.", 0, missingFields),
                         Clock.GetUtcNow().AddMinutes(1), token);
                     if (bookmarkIsBounded && raw.BookmarkXml is { } rejectedCursor)
                     {
-                        await store.SaveCursorAsync(source.Name, rejectedCursor, token);
-                        if (source is IEventCursorSource rejectedCursorSource) rejectedCursorSource.CommitCursor(rejectedCursor);
+                        await store.SaveCursorAsync(raw.SourceName, rejectedCursor, token);
+                        CommitCursor(raw.SourceName, rejectedCursor);
                     }
                     continue;
                 }
                 var isNew = await store.SaveEventAsync(item, token);
                 if (item.SourceCursor is not null)
                 {
-                    await store.SaveCursorAsync(source.Name, item.SourceCursor, token);
-                    if (source is IEventCursorSource cursorSource) cursorSource.CommitCursor(item.SourceCursor);
+                    await store.SaveCursorAsync(raw.SourceName, item.SourceCursor, token);
+                    CommitCursor(raw.SourceName, item.SourceCursor);
                 }
                 if (!isNew) continue;
                 var recent = await new TemporalCorrelator(store).GetRelatedEventsAsync(item, token);
@@ -93,6 +100,8 @@ public sealed class ThreatMonitorPipeline(
                             continue;
                         }
                         await EnqueueAsync(message, token);
+                        if (sessionRelay is not null && finding.MissingTelemetry.Count > 0)
+                            await sessionRelay.RequestForFindingAsync(finding, token);
                     }
                 }
                 foreach (var gap in result.Gaps)
@@ -102,13 +111,22 @@ public sealed class ThreatMonitorPipeline(
         finally
         {
             lifetime.Cancel();
-            try { await Task.WhenAll(publisher, heartbeat, healthTask, retentionTask); }
+            try { await Task.WhenAll(publisher, heartbeat, healthTask, retentionTask, requestTask, sessionResponseTask); }
             catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
+        }
+
+        void CommitCursor(string sourceName, string cursor)
+        {
+            if (source is IMultiEventCursorSource multiSource) multiSource.CommitCursor(sourceName, cursor);
+            else if (source is IEventCursorSource cursorSource) cursorSource.CommitCursor(cursor);
         }
     }
 
+
     private async Task PublishLoopAsync(CancellationToken ct)
     {
+        var guardAvailable = false;
+        var failureReported = false;
         using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(250));
         while (true)
         {
@@ -127,11 +145,18 @@ public sealed class ThreatMonitorPipeline(
                 {
                     await bus.PublishAsync(message, ct);
                     await store.MarkMessageDeliveredAsync(message.MessageId, ct);
+                    if (!guardAvailable)
+                        Console.WriteLine($"GUARD_DELIVERY_OK | ACK reçu pour le message {message.MessageId}.");
+                    guardAvailable = true;
+                    failureReported = false;
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
                 catch (Exception ex)
                 {
-                    Console.Error.WriteLine($"Guard delivery failed for {message.MessageId}: {ex.GetType().Name}");
+                    if (guardAvailable || !failureReported)
+                        Console.Error.WriteLine($"GUARD_DELIVERY_FAILED | messageId={message.MessageId} | {ex.GetType().Name}: {ex.Message}");
+                    guardAvailable = false;
+                    failureReported = true;
                     await store.ScheduleMessageRetryAsync(message.MessageId, ex.GetType().Name, Clock.GetUtcNow().AddMilliseconds(250), ct);
                 }
             }

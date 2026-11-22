@@ -56,6 +56,9 @@ public sealed class SqliteEventStore : IEventStore, IAsyncDisposable
                     next_attempt_utc TEXT NOT NULL, attempt_count INTEGER NOT NULL DEFAULT 0,
                     status TEXT NOT NULL DEFAULT 'pending', last_error TEXT NULL, payload_json TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS ix_outbox_pending ON outbox(status,next_attempt_utc,created_utc);
+                CREATE TABLE IF NOT EXISTS session_context_requests(
+                    correlation_id TEXT PRIMARY KEY, finding_id TEXT NOT NULL, request_message_id TEXT NOT NULL UNIQUE,
+                    requested_utc TEXT NOT NULL, deadline_utc TEXT NOT NULL, purge_utc TEXT NOT NULL, response_json TEXT NULL);
                 INSERT OR IGNORE INTO schema_migrations(version,applied_utc) VALUES(1,$now);
                 """;
             command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
@@ -106,6 +109,27 @@ public sealed class SqliteEventStore : IEventStore, IAsyncDisposable
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
             if (JsonSerializer.Deserialize<ThreatFinding>(reader.GetString(0), JsonOptions) is { } finding) result.Add(finding);
+        return result;
+    }
+
+    public async Task<IReadOnlyList<ThreatFinding>> LoadFindingsByCorrelationAsync(string correlationId,
+        DateTimeOffset nowUtc, int limit, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(correlationId);
+        if (correlationId.Length > 128) throw new ArgumentOutOfRangeException(nameof(correlationId));
+        if (limit is < 1 or > 50) throw new ArgumentOutOfRangeException(nameof(limit));
+        await EnsureInitializedAsync(cancellationToken);
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT payload_json FROM findings WHERE expires_utc > $now AND json_extract(payload_json, '$.correlationId')=$correlation ORDER BY timestamp_utc DESC,finding_id LIMIT $limit;";
+        command.Parameters.AddWithValue("$now", nowUtc.ToUniversalTime().ToString("O"));
+        command.Parameters.AddWithValue("$correlation", correlationId);
+        command.Parameters.AddWithValue("$limit", limit);
+        var result = new List<ThreatFinding>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            if (JsonSerializer.Deserialize<ThreatFinding>(reader.GetString(0), JsonOptions) is { } finding) result.Add(finding);
+        result.Reverse();
         return result;
     }
 
@@ -225,7 +249,7 @@ public sealed class SqliteEventStore : IEventStore, IAsyncDisposable
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.Transaction = (SqliteTransaction)transaction;
-        command.CommandText = "DELETE FROM events WHERE timestamp_utc < $cutoff; DELETE FROM findings WHERE expires_utc <= $now; DELETE FROM telemetry_gaps WHERE observed_utc < $cutoff; DELETE FROM outbox WHERE status IN ('delivered','expired','failed') AND expires_utc < $cutoff;";
+        command.CommandText = "DELETE FROM events WHERE timestamp_utc < $cutoff; DELETE FROM findings WHERE expires_utc <= $now; DELETE FROM telemetry_gaps WHERE observed_utc < $cutoff; DELETE FROM session_context_requests WHERE purge_utc < $cutoff; DELETE FROM outbox WHERE status IN ('delivered','expired','failed') AND expires_utc < $cutoff;";
         command.Parameters.AddWithValue("$cutoff", nowUtc.Subtract(_eventRetention).ToUniversalTime().ToString("O"));
         command.Parameters.AddWithValue("$now", nowUtc.ToUniversalTime().ToString("O"));
         await command.ExecuteNonQueryAsync(cancellationToken);
@@ -263,6 +287,104 @@ public sealed class SqliteEventStore : IEventStore, IAsyncDisposable
             throw new InvalidOperationException($"Outbox messageId collision with different content: {message.MessageId}.");
         }
         return false;
+    }
+
+    public async Task<bool> TryEnqueueSessionContextRequestAsync(InterDaemonEnvelope message, string findingId,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(findingId);
+        if (findingId.Length > 96 || findingId.Any(c => !char.IsAsciiLetterOrDigit(c) && c is not ('-' or '_' or '.' or ':')))
+            throw new ArgumentException("Finding ID must be a bounded opaque identifier.", nameof(findingId));
+        string? validationError = null;
+        if (message.MessageType != "SESSION_CONTEXT_REQUEST")
+            throw new InvalidOperationException("Expected a session context request.");
+        if (!InterDaemonEnvelopeValidator.TryValidate(message, DateTimeOffset.UtcNow, out validationError))
+            throw new InvalidOperationException(validationError);
+
+        await EnsureInitializedAsync(cancellationToken);
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        var requestedAt = message.TimestampUtc.ToUniversalTime();
+        var purgeAt = requestedAt.Add(_eventRetention);
+        await using (var register = connection.CreateCommand())
+        {
+            register.Transaction = (SqliteTransaction)transaction;
+            register.CommandText = "INSERT OR IGNORE INTO session_context_requests(correlation_id,finding_id,request_message_id,requested_utc,deadline_utc,purge_utc) VALUES($correlation,$finding,$message,$requested,$deadline,$purge);";
+            register.Parameters.AddWithValue("$correlation", message.CorrelationId);
+            register.Parameters.AddWithValue("$finding", findingId);
+            register.Parameters.AddWithValue("$message", message.MessageId.ToString("D"));
+            register.Parameters.AddWithValue("$requested", requestedAt.ToString("O"));
+            register.Parameters.AddWithValue("$deadline", message.ExpiresAtUtc.ToUniversalTime().ToString("O"));
+            register.Parameters.AddWithValue("$purge", purgeAt.ToString("O"));
+            if (await register.ExecuteNonQueryAsync(cancellationToken) != 1)
+            {
+                await transaction.CommitAsync(cancellationToken);
+                return false;
+            }
+        }
+
+        var payloadJson = JsonSerializer.Serialize(message, JsonOptions);
+        await using var enqueue = connection.CreateCommand();
+        enqueue.Transaction = (SqliteTransaction)transaction;
+        enqueue.CommandText = "INSERT OR IGNORE INTO outbox(message_id,created_utc,expires_utc,next_attempt_utc,payload_json) SELECT $id,$created,$expires,$created,$json WHERE (SELECT COUNT(*) FROM outbox WHERE status='pending') < 4096;";
+        enqueue.Parameters.AddWithValue("$id", message.MessageId.ToString("D"));
+        enqueue.Parameters.AddWithValue("$created", requestedAt.ToString("O"));
+        enqueue.Parameters.AddWithValue("$expires", message.ExpiresAtUtc.ToUniversalTime().ToString("O"));
+        enqueue.Parameters.AddWithValue("$json", payloadJson);
+        if (await enqueue.ExecuteNonQueryAsync(cancellationToken) != 1)
+        {
+            await using var undo = connection.CreateCommand();
+            undo.Transaction = (SqliteTransaction)transaction;
+            undo.CommandText = "DELETE FROM session_context_requests WHERE correlation_id=$correlation AND request_message_id=$message;";
+            undo.Parameters.AddWithValue("$correlation", message.CorrelationId);
+            undo.Parameters.AddWithValue("$message", message.MessageId.ToString("D"));
+            await undo.ExecuteNonQueryAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return false;
+        }
+        await transaction.CommitAsync(cancellationToken);
+        return true;
+    }
+
+    public async Task<bool> SaveSessionContextResponseAsync(string correlationId, SessionContextResponse response,
+        DateTimeOffset nowUtc, CancellationToken cancellationToken = default)
+    {
+        if (!IsValidSessionContext(response)) throw new ArgumentException("Session context response contains an invalid category.", nameof(response));
+        if (response.ObservedAtUtc.Offset != TimeSpan.Zero) throw new ArgumentException("Session context timestamp must be UTC.", nameof(response));
+        await EnsureInitializedAsync(cancellationToken);
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE session_context_requests SET response_json=$response WHERE correlation_id=$correlation AND response_json IS NULL AND deadline_utc > $now AND $observed <= deadline_utc;";
+        command.Parameters.AddWithValue("$response", JsonSerializer.Serialize(response, JsonOptions));
+        command.Parameters.AddWithValue("$correlation", correlationId);
+        command.Parameters.AddWithValue("$now", nowUtc.ToUniversalTime().ToString("O"));
+        command.Parameters.AddWithValue("$observed", response.ObservedAtUtc.ToUniversalTime().ToString("O"));
+        return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
+    }
+
+    public async Task<SessionContextAttachment?> LoadSessionContextAttachmentAsync(string correlationId,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken);
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT finding_id,requested_utc,deadline_utc,response_json FROM session_context_requests WHERE correlation_id=$correlation AND response_json IS NOT NULL;";
+        command.Parameters.AddWithValue("$correlation", correlationId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken)) return null;
+        var response = JsonSerializer.Deserialize<SessionContextResponse>(reader.GetString(3), JsonOptions);
+        if (response is null) return null;
+        return new SessionContextAttachment(correlationId, reader.GetString(0),
+            DateTimeOffset.Parse(reader.GetString(1), System.Globalization.CultureInfo.InvariantCulture),
+            DateTimeOffset.Parse(reader.GetString(2), System.Globalization.CultureInfo.InvariantCulture), response);
+    }
+
+    private static bool IsValidSessionContext(SessionContextResponse response)
+    {
+        if (!Enum.IsDefined(response.Status)) return false;
+        if (response.Status == SessionContextAvailability.NOT_AVAILABLE) return response.Context is null;
+        return response.Context is { } context && Enum.IsDefined(context.SessionState)
+            && Enum.IsDefined(context.LocalOrRemote) && Enum.IsDefined(context.RecentAuthBand);
     }
 
     public async Task<int> GetPendingMessageCountAsync(CancellationToken cancellationToken = default)

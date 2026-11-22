@@ -22,16 +22,18 @@ public sealed class DetectionEngine(TimeSpan? correlationWindow = null, TimeSpan
         var gaps = new List<TelemetryGap>();
 
         if (current.EventType == ThreatEventType.TELEMETRY_GAP)
-        {
-            var providerEventId = current.Fields?.GetValueOrDefault("providerEventId");
-            var (reason, missingField) = providerEventId switch
-            {
-                "4" => ("Sysmon signale que son service est arrêté; la télémétrie peut être indisponible.", "source_availability"),
-                "16" => ("Sysmon signale une modification de sa configuration; la couverture peut avoir changé.", "collector_configuration"),
-                _ => ("Une lacune ou une modification de la source de télémétrie a été signalée.", "telemetry_source_state")
-            };
-            gaps.Add(new(Guid.NewGuid().ToString("N"), current.Source, nowUtc, reason, 0, [missingField]));
-        }
+            gaps.Add(new(Guid.NewGuid().ToString("N"), current.Source, nowUtc,
+                "Une source Windows signale un changement de sa collecte.", 0, ["collector_configuration"]));
+
+        AddIf(current.EventType == ThreatEventType.DEFENDER_MALWARE_DETECTED, "defender_malware_detection",
+            "Microsoft Defender a enregistré une détection de logiciel malveillant ou potentiellement indésirable.",
+            ["defender_detection", "severity_category"]);
+        AddIf(current.EventType == ThreatEventType.DEFENDER_PROTECTION_DISABLED, "defender_protection_disabled",
+            "Microsoft Defender a signalé la désactivation d’une protection; vérifier si ce changement était attendu.",
+            ["protection_feature", "disabled"]);
+        AddIf(IsPowerShellScriptRisk(current), "powershell_script_indicators",
+            "Un bloc PowerShell contient des catégories d’indicateurs sensibles; cet événement ne prouve pas à lui seul que le code a été exécuté ni qu’une action a réussi.",
+            ["script_indicators", "execution_not_established"]);
 
         var missing = MissingTelemetry(current, text);
         if (missing.Count > 0)
@@ -78,18 +80,38 @@ public sealed class DetectionEngine(TimeSpan? correlationWindow = null, TimeSpan
                     "download" => evidenceEvents.Any(x => x.EventType == ThreatEventType.DOWNLOAD_OBSERVED) ? "observed" : "described in synthetic telemetry",
                     "network_connection" or "network_or_script" => evidenceEvents.Any(x => x.EventType == ThreatEventType.NETWORK_CONNECTION) ? "observed" : "described in synthetic telemetry",
                     "persistence_change" => evidenceEvents.Any(x => x.EventType == ThreatEventType.PERSISTENCE_CHANGE) ? "observed" : "described in synthetic telemetry",
+                    "severity_category" => evidenceEvents.Select(x => x.Fields?.GetValueOrDefault("defenderSeverity")).FirstOrDefault(x => x is not null) ?? "unknown",
+                    "protection_feature" => evidenceEvents.Select(x => x.Fields?.GetValueOrDefault("protectionFeature")).FirstOrDefault(x => x is not null) ?? "unknown",
+                    "script_indicators" => evidenceEvents.Where(x => x.Source == "PowerShell")
+                        .Select(x => x.Fields?.GetValueOrDefault("scriptIndicators")).FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? "none",
                     _ => "observed"
                 })).ToArray();
+            var severity = rule.Severity;
+            if (ruleId == "defender_malware_detection")
+                severity = current.Fields?.GetValueOrDefault("defenderSeverity") switch
+                {
+                    "critical" => ThreatSeverity.critical,
+                    "medium" => ThreatSeverity.medium,
+                    "low" => ThreatSeverity.low,
+                    _ => ThreatSeverity.high
+                };
             var id = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key))).ToLowerInvariant();
-            findings.Add(new(id, CorrelationKey(current), ruleId, rule.RuleVersion, rule.Severity, rule.Confidence, first, last,
+            findings.Add(new(id, CorrelationKey(current), ruleId, rule.RuleVersion, severity, rule.Confidence, first, last,
                 summary, facts, evidence, gaps.SelectMany(x => x.MissingFields).Distinct(StringComparer.Ordinal).ToArray(), nowUtc.Add(_lifetime)));
         }
     }
 
     private static CanonicalEvent[] SelectEvidence(string ruleId, CanonicalEvent[] timeline)
     {
+        if (ruleId == "powershell_script_indicators")
+        {
+            var powershellEvidence = timeline.Where(x => x.Source == "PowerShell" && x.EventType == ThreatEventType.SCRIPT_ACTIVITY).ToArray();
+            if (powershellEvidence.Length > 0) return powershellEvidence;
+        }
         var types = ruleId switch
         {
+            "defender_malware_detection" => new[] { ThreatEventType.DEFENDER_MALWARE_DETECTED },
+            "defender_protection_disabled" => new[] { ThreatEventType.DEFENDER_PROTECTION_DISABLED },
             "download_chain" => new[] { ThreatEventType.DOWNLOAD_OBSERVED, ThreatEventType.PROCESS_STARTED, ThreatEventType.SCRIPT_ACTIVITY, ThreatEventType.NETWORK_CONNECTION, ThreatEventType.PERSISTENCE_CHANGE },
             "script_child" => new[] { ThreatEventType.PROCESS_STARTED, ThreatEventType.SCRIPT_ACTIVITY, ThreatEventType.FILE_CREATED_OR_CHANGED, ThreatEventType.NETWORK_CONNECTION, ThreatEventType.PERSISTENCE_CHANGE },
             "drop_then_persistence" => new[] { ThreatEventType.PROCESS_STARTED, ThreatEventType.SCRIPT_ACTIVITY, ThreatEventType.PERSISTENCE_CHANGE },
@@ -201,6 +223,11 @@ public sealed class DetectionEngine(TimeSpan? correlationWindow = null, TimeSpan
 
     private static bool IsSyntheticFixture(CanonicalEvent item) =>
         item.Fields?.GetValueOrDefault("synthetic") == "true";
+
+    private static bool IsPowerShellScriptRisk(CanonicalEvent item)
+        => item.Source == "PowerShell" && item.EventType == ThreatEventType.SCRIPT_ACTIVITY
+            && item.Fields?.GetValueOrDefault("scriptIndicators") is { Length: > 0 } indicators
+            && !string.Equals(indicators, "none", StringComparison.Ordinal);
 
     private static bool IsDefenseTampering(string text) =>
         ContainsAny(text, "désactiver journalisation", "altération de configuration", "arrêt de source de sécurité", "modification des sources de sécurité");
