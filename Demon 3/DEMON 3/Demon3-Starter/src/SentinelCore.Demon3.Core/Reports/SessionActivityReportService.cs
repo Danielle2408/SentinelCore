@@ -9,6 +9,8 @@ namespace SentinelCore.Demon3.Core.Reports;
 public sealed record SessionActivityItem(DateTimeOffset ObservedAtUtc, string SourceDaemon, string MessageType,
     string Severity, string Summary, string CorrelationId);
 
+public sealed record ManualActivitySnapshotResult(SessionActivityReport Report, bool SessionInitializedForSnapshot);
+
 public sealed record SessionActivityReport(Guid ReportId, string SessionId, DateTimeOffset SessionStartedAtUtc,
     DateTimeOffset ComputerBootAtUtc, DateTimeOffset CapturedAtUtc, DateTimeOffset? SessionEndedAtUtc, string Trigger, bool IsFinal,
     int TotalActivityCount, int D1ActivityCount, int D2ActivityCount, int ThreatCount, int TelemetryGapCount,
@@ -174,6 +176,31 @@ public sealed class SessionActivityReportService
             var sessionId = await ReadLatestSessionIdAsync(connection, cancellationToken).ConfigureAwait(false)
                 ?? throw new InvalidOperationException("Aucune session SentinelCore n’a encore été ouverte par D3.");
             return await SaveSnapshotCoreAsync(connection, sessionId, trigger, IsFinalTrigger(trigger), null, cancellationToken).ConfigureAwait(false);
+        }
+        finally { _gate.Release(); }
+    }
+
+    /// <summary>
+    /// Creates an on-demand report even when an older D3 build has not opened the activity journal yet.
+    /// The new journal starts at this moment; it does not claim to contain activity from before initialization.
+    /// </summary>
+    public async Task<ManualActivitySnapshotResult> CreateManualSnapshotAsync(CancellationToken cancellationToken = default)
+    {
+        var initializedForSnapshot = !await HasActiveSessionAsync(cancellationToken).ConfigureAwait(false);
+        if (initializedForSnapshot)
+            await BeginSessionAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        var report = await CreateSnapshotAsync("MANUAL", cancellationToken).ConfigureAwait(false);
+        return new(report, initializedForSnapshot);
+    }
+
+    private async Task<bool> HasActiveSessionAsync(CancellationToken cancellationToken)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await using var connection = await OpenDatabaseAsync(cancellationToken).ConfigureAwait(false);
+            return await ReadActiveSessionIdAsync(connection, cancellationToken).ConfigureAwait(false) is not null;
         }
         finally { _gate.Release(); }
     }

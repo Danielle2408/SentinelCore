@@ -6,6 +6,66 @@ namespace SentinelCore.Demon3.Tests;
 public sealed class SessionActivityReportTests
 {
     [Fact]
+    public async Task ManualSnapshotInitializesJournalWhenAnOlderD3DidNotCreateOne()
+    {
+        var folder = Path.Combine(Path.GetTempPath(), "SentinelCore-ManualReportInit-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var service = new SessionActivityReportService(folder);
+
+            var result = await service.CreateManualSnapshotAsync();
+
+            Assert.True(result.SessionInitializedForSnapshot);
+            Assert.Equal("MANUAL", result.Report.Trigger);
+            Assert.Equal(0, result.Report.TotalActivityCount);
+            Assert.True(File.Exists(result.Report.JsonPath));
+            var reports = await service.ReadRecentAsync();
+            Assert.Contains(reports, report => report.Trigger == "STARTUP");
+            Assert.Contains(reports, report => report.ReportId == result.Report.ReportId);
+        }
+        finally { if (Directory.Exists(folder)) Directory.Delete(folder, recursive: true); }
+    }
+
+    [Fact]
+    public async Task ManualSnapshotReusesAnAlreadyInitializedSession()
+    {
+        var folder = Path.Combine(Path.GetTempPath(), "SentinelCore-ManualReportExisting-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var service = new SessionActivityReportService(folder);
+            var startup = await service.BeginSessionAsync();
+
+            var result = await service.CreateManualSnapshotAsync();
+
+            Assert.False(result.SessionInitializedForSnapshot);
+            Assert.Equal(startup.SessionId, result.Report.SessionId);
+            Assert.Equal("MANUAL", result.Report.Trigger);
+        }
+        finally { if (Directory.Exists(folder)) Directory.Delete(folder, recursive: true); }
+    }
+
+    [Fact]
+    public async Task ManualSnapshotStartsANewSessionWhenOnlyAClosedSessionExists()
+    {
+        var folder = Path.Combine(Path.GetTempPath(), "SentinelCore-ManualReportClosed-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var service = new SessionActivityReportService(folder);
+            var previous = await service.BeginSessionAsync();
+            await service.FinalizeSessionAsync();
+
+            var result = await service.CreateManualSnapshotAsync();
+
+            Assert.True(result.SessionInitializedForSnapshot);
+            Assert.NotEqual(previous.SessionId, result.Report.SessionId);
+            Assert.Equal("MANUAL", result.Report.Trigger);
+            Assert.Equal(0, result.Report.TotalActivityCount);
+            Assert.Equal("ACTIVE", result.Report.SessionState);
+        }
+        finally { if (Directory.Exists(folder)) Directory.Delete(folder, recursive: true); }
+    }
+
+    [Fact]
     public async Task StartupAndManualSnapshotsIncludeActivityAndCoverageWithoutThreatsBeingRequired()
     {
         var folder = Path.Combine(Path.GetTempPath(), "SentinelCore-SessionReport-" + Guid.NewGuid().ToString("N"));

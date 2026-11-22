@@ -29,9 +29,13 @@ public partial class ReportCenterWindow : Window
         SetBusy(true, "Création d’un instantané à partir des activités déjà reçues…");
         try
         {
-            var report = await _sessionReports.CreateSnapshotAsync("MANUAL");
+            var result = await _sessionReports.CreateManualSnapshotAsync();
+            var report = result.Report;
             await RefreshReportsAsync(report.ReportId);
-            StatusText.Text = $"Instantané enregistré à {report.CapturedAtUtc.ToLocalTime():dd/MM/yyyy HH:mm:ss}. Il contient {report.TotalActivityCount} activité(s) observée(s).";
+            var journalNote = result.SessionInitializedForSnapshot
+                ? " D3 n’avait pas ouvert le journal d’activité; le suivi repart maintenant. Les anciennes décisions D3 restent dans l’historique de sécurité séparé."
+                : string.Empty;
+            StatusText.Text = $"Instantané enregistré à {report.CapturedAtUtc.ToLocalTime():dd/MM/yyyy HH:mm:ss}. Il contient {report.TotalActivityCount} activité(s) observée(s).{journalNote}";
         }
         catch (Exception ex)
         {
