@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
+using System.Windows.Forms;
+using SentinelCore.Demon3.Cli;
 using SentinelCore.Demon3.Core.AI;
 using SentinelCore.Demon3.Core.Actions;
 using SentinelCore.Demon3.Core.Contracts;
@@ -104,10 +106,33 @@ if (args.Length >= 1 && args[0] == "--serve")
     var hostTask = host.RunAsync(stop.Token);
     var stopReader = ReadStopCommandAsync(stop);
     var telegramTask = telegramAlerts.RunAsync(stop.Token);
+    WindowsShutdownMonitor? shutdownMonitor = null;
+    try
+    {
+        shutdownMonitor = new WindowsShutdownMonitor(
+            beforeShutdown: () =>
+            {
+                try
+                {
+                    sessionActivityReports.CreateSnapshotAsync("SHUTDOWN_REQUEST").WaitAsync(TimeSpan.FromSeconds(4)).GetAwaiter().GetResult();
+                    Console.WriteLine($"{DateTimeOffset.UtcNow:O} | INFO | Instantané de pré-arrêt enregistré.");
+                }
+                catch (Exception exception) { Console.WriteLine($"{DateTimeOffset.UtcNow:O} | WARNING | Instantané de pré-arrêt indisponible : {exception.GetType().Name}."); }
+            },
+            onShutdown: () =>
+            {
+                stop.Cancel();
+                try { hostTask.Wait(TimeSpan.FromSeconds(4)); }
+                catch (AggregateException) { }
+            });
+    }
+    catch (Exception exception)
+    { Console.WriteLine($"{DateTimeOffset.UtcNow:O} | WARNING | Veille de fermeture Windows indisponible : {exception.GetType().Name}."); }
     try { await hostTask; }
     catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
     finally
     {
+        shutdownMonitor?.Dispose();
         stop.Cancel();
         try { await stopReader; }
         catch (OperationCanceledException) { }
@@ -129,9 +154,9 @@ static async Task ReadStopCommandAsync(CancellationTokenSource stop)
             var line = await Console.In.ReadLineAsync(stop.Token);
             if (line is null)
             {
-                // The Center redirects stdin. Closing that parent pipe during user/session
-                // shutdown is a graceful-stop signal, which lets D3 persist a final snapshot.
-                stop.Cancel();
+                // The Center may close while the protection daemons are configured to keep
+                // running. EOF detaches D3; explicit STOP or Windows SessionEnding stops it.
+                await Task.Delay(Timeout.InfiniteTimeSpan, stop.Token);
                 return;
             }
             if (string.Equals(line.Trim(), "STOP", StringComparison.OrdinalIgnoreCase))
