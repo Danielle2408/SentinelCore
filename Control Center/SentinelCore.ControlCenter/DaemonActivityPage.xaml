@@ -1,0 +1,114 @@
+<UserControl x:Class="SentinelCore.ControlCenter.DaemonActivityPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Background="{StaticResource CanvasBrush}">
+  <UserControl.Resources>
+    <Style TargetType="DataGrid">
+      <Setter Property="Background" Value="{StaticResource PanelBrush}" />
+      <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="RowBackground" Value="{StaticResource PanelBrush}" />
+      <Setter Property="AlternatingRowBackground" Value="{StaticResource PanelRaisedBrush}" />
+      <Setter Property="HeadersVisibility" Value="Column" />
+      <Setter Property="GridLinesVisibility" Value="None" />
+      <Setter Property="CanUserAddRows" Value="False" />
+      <Setter Property="IsReadOnly" Value="True" />
+      <Setter Property="AutoGenerateColumns" Value="False" />
+      <Setter Property="RowHeight" Value="40" />
+      <Setter Property="AlternationCount" Value="2" />
+    </Style>
+    <Style TargetType="DataGridColumnHeader">
+      <Setter Property="Background" Value="{StaticResource PanelRaisedBrush}" />
+      <Setter Property="Foreground" Value="{StaticResource MutedBrush}" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Padding" Value="12,9" />
+      <Setter Property="BorderThickness" Value="0" />
+    </Style>
+  </UserControl.Resources>
+
+  <Grid x:Name="ActivityRootGrid" Margin="30,24,30,26">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="*" />
+      <RowDefinition Height="Auto" />
+    </Grid.RowDefinitions>
+
+    <DockPanel Grid.Row="0" Margin="0,0,0,18">
+      <StackPanel DockPanel.Dock="Left">
+        <TextBlock Text="ACTIVITÉS DES DÉMONS" FontSize="10" Foreground="{StaticResource MutedBrush}" FontWeight="Bold" />
+        <TextBlock Text="Événements D2 et décisions D3" FontSize="22" FontWeight="SemiBold" Margin="0,4,0,0" />
+        <TextBlock Text="Historique local lu depuis les bases de données des démons." FontSize="11" Foreground="{StaticResource MutedBrush}" Margin="0,5,0,0" />
+      </StackPanel>
+      <Button x:Name="RefreshButton" DockPanel.Dock="Right" Content="Actualiser" Style="{StaticResource SecondaryButton}"
+              Padding="15,9" VerticalAlignment="Center" Click="Refresh_Click" />
+    </DockPanel>
+
+    <UniformGrid x:Name="ActivityStatsGrid" Grid.Row="1" Columns="3" Margin="0,0,0,16">
+      <Border Style="{StaticResource PanelBorder}" Margin="0,0,12,0">
+        <StackPanel>
+          <TextBlock Text="ÉVÉNEMENTS D2" FontSize="9" Foreground="{StaticResource MutedBrush}" FontWeight="Bold" />
+          <TextBlock x:Name="D2EventCount" Text="—" FontSize="27" FontWeight="SemiBold" Margin="0,7,0,2" />
+          <TextBlock x:Name="D2EventStatus" Text="Lecture de la base locale" FontSize="10" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" />
+        </StackPanel>
+      </Border>
+      <Border Style="{StaticResource PanelBorder}" Margin="0,0,12,0">
+        <StackPanel>
+          <TextBlock Text="SIGNALEMENTS D2" FontSize="9" Foreground="{StaticResource MutedBrush}" FontWeight="Bold" />
+          <TextBlock x:Name="D2FindingCount" Text="—" FontSize="27" FontWeight="SemiBold" Margin="0,7,0,2" />
+          <TextBlock x:Name="D2FindingStatus" Text="Constats conservés par D2" FontSize="10" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" />
+        </StackPanel>
+      </Border>
+      <Border Style="{StaticResource PanelBorder}">
+        <StackPanel>
+          <TextBlock Text="RAPPORTS D3" FontSize="9" Foreground="{StaticResource MutedBrush}" FontWeight="Bold" />
+          <TextBlock x:Name="D3ReportCount" Text="—" FontSize="27" FontWeight="SemiBold" Margin="0,7,0,2" />
+          <TextBlock x:Name="D3ReportStatus" Text="Décisions locales archivées" FontSize="10" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" />
+        </StackPanel>
+      </Border>
+    </UniformGrid>
+
+    <Border Grid.Row="2" Background="#0C1321" BorderBrush="{StaticResource LineBrush}" BorderThickness="1"
+            CornerRadius="10" Padding="12,9" Margin="0,0,0,14">
+      <DockPanel>
+        <TextBlock DockPanel.Dock="Left" Text="TRANSPORT INTER-DÉMONS" FontSize="9" FontWeight="Bold"
+                   Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" Margin="0,0,12,0" />
+        <TextBlock x:Name="TransportStatus" Text="Non vérifié par cette page" FontSize="10" FontWeight="SemiBold"
+                   Foreground="{StaticResource AmberBrush}" VerticalAlignment="Center" />
+        <TextBlock x:Name="LastRefresh" DockPanel.Dock="Right" Text="Dernière lecture : —" FontSize="10"
+                   Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" />
+      </DockPanel>
+    </Border>
+
+    <Border Grid.Row="3" Style="{StaticResource PanelBorder}" Padding="0" ClipToBounds="True">
+      <Grid>
+        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+        <DockPanel Margin="18,16,18,12">
+          <StackPanel DockPanel.Dock="Left">
+            <TextBlock Text="CHRONOLOGIE LOCALE" FontSize="10" Foreground="{StaticResource MutedBrush}" FontWeight="Bold" />
+            <TextBlock Text="Signaux D2 et décisions D3, du plus récent au plus ancien" FontSize="14" FontWeight="SemiBold" Margin="0,3,0,0" />
+          </StackPanel>
+          <TextBlock x:Name="ActivityStatus" DockPanel.Dock="Right" Text="En attente de lecture" FontSize="10"
+                     Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" TextWrapping="Wrap" />
+        </DockPanel>
+        <DataGrid x:Name="ActivityGrid" Grid.Row="1" ItemsSource="{Binding ActivityRows}" AlternationCount="2"
+                  ScrollViewer.HorizontalScrollBarVisibility="Auto" ScrollViewer.VerticalScrollBarVisibility="Auto">
+          <DataGrid.Columns>
+            <DataGridTextColumn Header="HEURE LOCALE" Binding="{Binding Time}" Width="145" />
+            <DataGridTextColumn Header="DÉMON" Binding="{Binding Daemon}" Width="82" />
+            <DataGridTextColumn Header="TYPE" Binding="{Binding Kind}" Width="190" />
+            <DataGridTextColumn Header="NIVEAU" Binding="{Binding Severity}" Width="105" />
+            <DataGridTextColumn Header="DÉTAIL" Binding="{Binding Summary}" Width="*" />
+            <DataGridTextColumn Header="CORRÉLATION" Binding="{Binding CorrelationId}" Width="210" />
+          </DataGrid.Columns>
+        </DataGrid>
+        <TextBlock x:Name="EmptyState" Grid.Row="2" Text="Aucune activité locale enregistrée pour le moment."
+                   FontSize="11" Foreground="{StaticResource MutedBrush}" Margin="18,11,18,15" />
+      </Grid>
+    </Border>
+
+    <TextBlock Grid.Row="4" Text="La présence d’un processus et l’état du pipe sont deux informations distinctes. Cette page lit les journaux locaux; le transport reste « non vérifié » tant qu’un contrôle dédié ne l’a pas confirmé."
+               FontSize="10" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="2,12,2,0" />
+  </Grid>
+</UserControl>
