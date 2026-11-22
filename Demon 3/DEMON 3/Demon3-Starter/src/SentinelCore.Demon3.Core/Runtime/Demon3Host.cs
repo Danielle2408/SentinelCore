@@ -12,7 +12,8 @@ namespace SentinelCore.Demon3.Core.Runtime;
 
 /// <summary>Runs the D3 receive, correlate, decide and report loop. System actions remain simulated.</summary>
 public sealed class Demon3Host(NamedPipeInterDaemonServer bus, RiskDecisionEngine engine,
-    RiskReportStore reports, IAmbiguousCaseAdvisor advisor, ActionCatalog actions, Demon3HostOptions? options = null)
+    RiskReportStore reports, IAmbiguousCaseAdvisor advisor, ActionCatalog actions, Demon3HostOptions? options = null,
+    SessionActivityReportService? sessionActivityReports = null)
 {
     private readonly Demon3HostOptions _options = (options ?? Demon3HostOptions.Default).Validate();
     private readonly ConcurrentDictionary<string, CaseBuffer> _cases = new(StringComparer.Ordinal);
@@ -44,14 +45,37 @@ public sealed class Demon3Host(NamedPipeInterDaemonServer bus, RiskDecisionEngin
     public async Task RunAsync(CancellationToken cancellationToken = default)
     {
         bus.MessageRejected += OnInboundMessageRejected;
+        using var periodicSnapshotStop = new CancellationTokenSource();
+        Task? periodicSnapshotTask = null;
+        var sessionStarted = false;
         try
         {
         await bus.StartAsync(cancellationToken).ConfigureAwait(false);
+        if (sessionActivityReports is not null)
+        {
+            try
+            {
+                await sessionActivityReports.BeginSessionAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+                sessionStarted = true;
+                periodicSnapshotTask = RunPeriodicActivitySnapshotsAsync(periodicSnapshotStop.Token);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                OperationalNotice?.Invoke($"Rapport de session indisponible au démarrage : {exception.GetType().Name}.");
+            }
+        }
         await foreach (var envelope in bus.ReadAllAsync(cancellationToken).ConfigureAwait(false))
         {
             if (envelope.MessageType is "HEARTBEAT" or "HELLO")
             {
                 _heartbeats[envelope.SourceDaemon] = envelope.TimestampUtc;
+                if (envelope.MessageType == "HEARTBEAT" && !IsSyntheticEnvelope(envelope)
+                    && sessionActivityReports is not null)
+                {
+                    try { await sessionActivityReports.RecordHeartbeatAsync(envelope.SourceDaemon, envelope.TimestampUtc, cancellationToken).ConfigureAwait(false); }
+                    catch (Exception exception) when (exception is not OperationCanceledException)
+                    { OperationalNotice?.Invoke($"Battement de session non enregistré : {exception.GetType().Name}."); }
+                }
                 await bus.MarkProcessedAsync(envelope.MessageId, cancellationToken).ConfigureAwait(false);
                 continue;
             }
@@ -109,6 +133,18 @@ public sealed class Demon3Host(NamedPipeInterDaemonServer bus, RiskDecisionEngin
             var degraded = IsDegraded(envelope.TimestampUtc);
             var decision = engine.Evaluate(envelope.CorrelationId, related, degraded);
             var savedReport = await reports.SaveAsync(decision, related, cancellationToken: cancellationToken).ConfigureAwait(false);
+            if (!syntheticCase && sessionActivityReports is not null)
+            {
+                try
+                {
+                    await sessionActivityReports.RecordActivityAsync(item.SourceDaemon, item.MessageType, item.Severity,
+                        item.ReasonCode, envelope.CorrelationId, item.ObservedAtUtc, cancellationToken).ConfigureAwait(false);
+                    await sessionActivityReports.RecordDecisionAsync(decision.Risk.ToString(), decision.Decision.ToString(),
+                        envelope.CorrelationId, decision.DecidedAtUtc, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException)
+                { OperationalNotice?.Invoke($"Activité de session non enregistrée : {exception.GetType().Name}."); }
+            }
             // The deterministic decision is durable before the D2 sender is told this delivery is complete.
             // Side effects and model calls start only after this idempotency checkpoint.
             await bus.MarkProcessedAsync(envelope.MessageId, cancellationToken).ConfigureAwait(false);
@@ -157,6 +193,18 @@ public sealed class Demon3Host(NamedPipeInterDaemonServer bus, RiskDecisionEngin
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
         finally
         {
+        periodicSnapshotStop.Cancel();
+        if (periodicSnapshotTask is not null)
+        {
+            try { await periodicSnapshotTask.ConfigureAwait(false); }
+            catch (OperationCanceledException) when (periodicSnapshotStop.IsCancellationRequested) { }
+        }
+        if (sessionStarted && sessionActivityReports is not null)
+        {
+            var stopTrigger = cancellationToken.IsCancellationRequested ? "SESSION_END" : "D3_STOPPED";
+            try { await sessionActivityReports.FinalizeSessionAsync(stopTrigger, CancellationToken.None).ConfigureAwait(false); }
+            catch (Exception exception) { OperationalNotice?.Invoke($"Rapport final de session non enregistré : {exception.GetType().Name}."); }
+        }
         bus.MessageRejected -= OnInboundMessageRejected;
         if (!_aiJobs.IsEmpty)
         {
@@ -180,6 +228,26 @@ public sealed class Demon3Host(NamedPipeInterDaemonServer bus, RiskDecisionEngin
         }
         }
     }
+
+    private async Task RunPeriodicActivitySnapshotsAsync(CancellationToken cancellationToken)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromMinutes(5));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
+            {
+                try { await sessionActivityReports!.CreateSnapshotAsync("PERIODIC", cancellationToken).ConfigureAwait(false); }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                catch (Exception exception) { OperationalNotice?.Invoke($"Rapport périodique non enregistré : {exception.GetType().Name}."); }
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+    }
+
+    private static bool IsSyntheticEnvelope(DaemonEnvelope envelope)
+        => envelope.Payload.ValueKind == JsonValueKind.Object
+            && envelope.Payload.TryGetProperty("synthetic", out var synthetic)
+            && synthetic.ValueKind == JsonValueKind.True;
 
     private void OnInboundMessageRejected(string notice) => OperationalNotice?.Invoke(notice);
 
@@ -405,6 +473,12 @@ public sealed class Demon3Host(NamedPipeInterDaemonServer bus, RiskDecisionEngin
                 var finalReport = await reports.UpdateLatestDecisionAsync(correlationId, finalDecision, related, advice, token).ConfigureAwait(false);
                 if (finalReport is not null)
                 {
+                    if (sessionActivityReports is not null && related.All(x => !x.IsSynthetic))
+                    {
+                        try { await sessionActivityReports.RecordDecisionAsync(finalDecision.Risk.ToString(), finalDecision.Decision.ToString(), correlationId, finalDecision.DecidedAtUtc, token).ConfigureAwait(false); }
+                        catch (Exception exception) when (exception is not OperationCanceledException)
+                        { OperationalNotice?.Invoke($"Décision IA non ajoutée au rapport de session : {exception.GetType().Name}."); }
+                    }
                     ReportCreated?.Invoke(finalReport);
                     if (finalDecision.ProposedAction != ProposedAction.NONE
                         && _actionRequests.TryAdd(correlationId + "|AI|" + finalDecision.ProposedAction, 0))
@@ -850,8 +924,20 @@ public sealed class Demon3Host(NamedPipeInterDaemonServer bus, RiskDecisionEngin
         buffer.Add(new DecisionEvidence(sourceDaemon, messageType, "UNKNOWN", null,
             reasonCode, [], DateTimeOffset.UtcNow));
         var related = buffer.Snapshot();
+        if (sessionActivityReports is not null && related.All(x => !x.IsSynthetic))
+        {
+            try { await sessionActivityReports.RecordActivityAsync(sourceDaemon, messageType, "UNKNOWN", reasonCode, correlationId, DateTimeOffset.UtcNow, token).ConfigureAwait(false); }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            { OperationalNotice?.Invoke($"Absence de contexte non ajoutée au rapport de session : {exception.GetType().Name}."); }
+        }
         var decision = engine.Evaluate(correlationId, related, IsDegraded(DateTimeOffset.UtcNow));
         var report = await reports.SaveAsync(decision, related, cancellationToken: token).ConfigureAwait(false);
+        if (sessionActivityReports is not null && related.All(x => !x.IsSynthetic))
+        {
+            try { await sessionActivityReports.RecordDecisionAsync(decision.Risk.ToString(), decision.Decision.ToString(), correlationId, decision.DecidedAtUtc, token).ConfigureAwait(false); }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            { OperationalNotice?.Invoke($"Décision de repli non ajoutée au rapport de session : {exception.GetType().Name}."); }
+        }
         ReportCreated?.Invoke(report);
         TryStartAiAnalysis(correlationId, decision, related, true, token);
     }

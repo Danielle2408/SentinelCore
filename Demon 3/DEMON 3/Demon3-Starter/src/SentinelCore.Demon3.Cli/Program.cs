@@ -87,7 +87,9 @@ if (args.Length >= 1 && args[0] == "--serve")
     await using var pipe = new NamedPipeInterDaemonServer(additionalD1ClientSids: additionalD1PipeClientSids,
         additionalD2ClientSids: additionalD2PipeClientSids, journal: inboundJournal);
     var reportStore = new RiskReportStore(reportsDirectory);
-    var host = new Demon3Host(pipe, new RiskDecisionEngine(), reportStore, advisor, new ActionCatalog(actionMode));
+    var sessionActivityReports = new SessionActivityReportService(reportsDirectory);
+    var host = new Demon3Host(pipe, new RiskDecisionEngine(), reportStore, advisor,
+        new ActionCatalog(actionMode), sessionActivityReports: sessionActivityReports);
     using var telegramHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(12) };
     var telegramAlerts = new TelegramReportNotifier(reportStore, new TelegramAlertSettingsStore(),
         new TelegramBotApiClient(telegramHttp), notice => Console.WriteLine($"{DateTimeOffset.UtcNow:O} | INFO | {notice}"));
@@ -95,6 +97,7 @@ if (args.Length >= 1 && args[0] == "--serve")
     host.ReportCreated += report => { telegramAlerts.QueueIfImportant(report); };
     host.OperationalNotice += notice => Console.WriteLine($"{DateTimeOffset.UtcNow:O} | INFO | {notice}");
     Console.WriteLine("Les rapports seront enregistrés dans : " + reportsDirectory);
+    Console.WriteLine("Les rapports d’activité de session (démarrage, instantanés périodiques et arrêt normal) utilisent le même dossier.");
     Console.WriteLine($"Modèle Ollama : {selectedModel}. Mesures : {(actionMode == ActionCatalogMode.SimulationOnly ? "simulation" : "analyse rapide Microsoft Defender autorisée")}; confinement toujours bloqué sans validation propriétaire. Tape STOP ou Ctrl+C pour arrêter.");
     // Start the IPC host before the asynchronous console reader. The latter can occupy the
     // initial worker scheduled for pipe startup on Windows, leaving a falsely-ready listener.
@@ -121,8 +124,16 @@ static async Task ReadStopCommandAsync(CancellationTokenSource stop)
 {
     try
     {
-        while (await Console.In.ReadLineAsync(stop.Token) is { } line)
+        while (true)
         {
+            var line = await Console.In.ReadLineAsync(stop.Token);
+            if (line is null)
+            {
+                // The Center redirects stdin. Closing that parent pipe during user/session
+                // shutdown is a graceful-stop signal, which lets D3 persist a final snapshot.
+                stop.Cancel();
+                return;
+            }
             if (string.Equals(line.Trim(), "STOP", StringComparison.OrdinalIgnoreCase))
             {
                 stop.Cancel();
