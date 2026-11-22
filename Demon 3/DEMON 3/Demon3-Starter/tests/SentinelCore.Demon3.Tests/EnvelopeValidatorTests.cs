@@ -155,6 +155,77 @@ public sealed class EnvelopeValidatorTests
         Assert.True(result.DurationMilliseconds is >= 0);
     }
 
+    [Theory]
+    [InlineData("The unusual application context raises concern.", AdvisorStatus.InvalidResponse)]
+    [InlineData("Le contexte applicatif inhabituel mérite une vérification.", AdvisorStatus.InvalidResponse)]
+    [InlineData("The familiar application and usual hours are a major red flag.", AdvisorStatus.InvalidResponse)]
+    [InlineData("L’application et l’horaire habituels sont un signal d’alarme majeur.", AdvisorStatus.InvalidResponse)]
+    [InlineData("Le fait que l'application soit habituelle ne prouve pas que le processus est sûr.", AdvisorStatus.Advised)]
+    public async Task OllamaMustNotContradictKnownD1ApplicationAndHourFamiliarity(string assessment, AdvisorStatus expectedStatus)
+    {
+        var adviceJson = JsonSerializer.Serialize(new
+        {
+            riskBand = "HIGH", confidence = 0.9, assessment,
+            keyFindings = Array.Empty<string>(), benignExplanations = Array.Empty<string>(),
+            threatHypotheses = Array.Empty<string>(), uncertainties = Array.Empty<string>(),
+            summary = "Analyse fondée sur les signaux reçus.", requestedContext = Array.Empty<string>(),
+            suggestedMeasure = "NO_RECOMMENDATION", rationale = "Le risque technique reste à évaluer.",
+            evidenceRefs = new[] { "D1-FAMILIARITY" }, capabilityGap = "", playbookDraft = ""
+        }, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        var responseJson = JsonSerializer.Serialize(new
+        {
+            model = "test-model", done = true,
+            message = new { role = "assistant", content = adviceJson }
+        }, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        using var http = new HttpClient(new StaticResponseHandler(HttpStatusCode.OK, responseJson));
+        var advisor = new OllamaAmbiguousCaseAdvisor(http, new OllamaAdvisorOptions(
+            new Uri("http://127.0.0.1:11434/"), "test-model", TimeSpan.FromSeconds(2), ContextWindow: 512));
+        var input = new AmbiguousSecurityCase("D3-AI-D1-FAMILIARITY-TEST",
+            [new("HumanBehaviorMonitor", "USER_CONTEXT", "LOW", 0.8, "APPLICATION_AND_HOUR_SEEN_IN_PROFILE",
+                ["D1-FAMILIARITY"], ["seenInLearnedHistory=yes", "hourCommonForApp=yes"])], []);
+
+        var result = await advisor.AnalyzeAsync(input);
+
+        Assert.Equal(expectedStatus, result.Status);
+        if (expectedStatus == AdvisorStatus.InvalidResponse)
+            Assert.Equal("OLLAMA_UNSUPPORTED_D1_FAMILIARITY_INFERENCE", result.ErrorCode);
+        else
+            Assert.NotNull(result.Advice);
+    }
+
+    [Theory]
+    [InlineData("A critical system component is missing.")]
+    [InlineData("Un composant système critique est manquant.")]
+    [InlineData("Le manque de parentProcess est un signal d'alarme majeur.")]
+    public async Task OllamaMustNotTurnMissingTelemetryIntoMissingWindowsComponent(string assessment)
+    {
+        var adviceJson = JsonSerializer.Serialize(new
+        {
+            riskBand = "HIGH", confidence = 0.9, assessment,
+            keyFindings = Array.Empty<string>(), benignExplanations = Array.Empty<string>(),
+            threatHypotheses = Array.Empty<string>(), uncertainties = Array.Empty<string>(),
+            summary = assessment, requestedContext = Array.Empty<string>(),
+            suggestedMeasure = "NO_RECOMMENDATION", rationale = "Le champ de télémétrie parentProcess manque.",
+            evidenceRefs = new[] { "D2-MISSING-PARENT" }, capabilityGap = "", playbookDraft = ""
+        }, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        var responseJson = JsonSerializer.Serialize(new
+        {
+            model = "test-model", done = true,
+            message = new { role = "assistant", content = adviceJson }
+        }, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        using var http = new HttpClient(new StaticResponseHandler(HttpStatusCode.OK, responseJson));
+        var advisor = new OllamaAmbiguousCaseAdvisor(http, new OllamaAdvisorOptions(
+            new Uri("http://127.0.0.1:11434/"), "test-model", TimeSpan.FromSeconds(2), ContextWindow: 512));
+        var input = new AmbiguousSecurityCase("D3-AI-MISSING-TELEMETRY-TEST",
+            [new("ThreatMonitor", "THREAT_FINDING", "HIGH", 0.78, "MISSING_PARENT_PROCESS",
+                ["D2-MISSING-PARENT"], ["parentProcess=missing"])], []);
+
+        var result = await advisor.AnalyzeAsync(input);
+
+        Assert.Equal(AdvisorStatus.InvalidResponse, result.Status);
+        Assert.Equal("OLLAMA_UNSUPPORTED_SYSTEM_COMPONENT_INFERENCE", result.ErrorCode);
+    }
+
     private sealed class StaticResponseHandler(HttpStatusCode statusCode, string body) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
