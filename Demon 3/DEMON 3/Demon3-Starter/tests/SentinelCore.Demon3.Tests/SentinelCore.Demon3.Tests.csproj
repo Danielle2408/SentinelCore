@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.0.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5" PrivateAssets="all" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/SentinelCore.Demon3.Core/SentinelCore.Demon3.Core.csproj" />
+    <ProjectReference Include="../../../../../Demon 2/src/SentinelCore.Demon2.Core/SentinelCore.Demon2.Core.csproj" />
+    <ProjectReference Include="../../../../../Demon 2/src/SentinelCore.Demon2.Service/SentinelCore.Demon2.Service.csproj" />
+    <ProjectReference Include="../../../../../Demon 1/Mode_Validation/src/SentinelCore.Demon1.VisualVerification/SentinelCore.Demon1.VisualVerification.csproj" />
+  </ItemGroup>
+</Project>
