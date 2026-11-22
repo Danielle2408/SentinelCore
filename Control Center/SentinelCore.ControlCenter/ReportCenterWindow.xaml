@@ -1,0 +1,137 @@
+<Window x:Class="SentinelCore.ControlCenter.ReportCenterWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Rapports — SentinelCore" Width="1080" Height="720"
+        MinWidth="760" MinHeight="540" ResizeMode="CanResizeWithGrip"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        Background="{StaticResource CanvasBrush}" Foreground="{StaticResource TextBrush}"
+        UseLayoutRounding="True" SnapsToDevicePixels="True">
+  <Window.Resources>
+    <Style TargetType="DataGrid">
+      <Setter Property="Background" Value="{StaticResource PanelBrush}" />
+      <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="RowBackground" Value="{StaticResource PanelBrush}" />
+      <Setter Property="AlternatingRowBackground" Value="{StaticResource PanelRaisedBrush}" />
+      <Setter Property="HeadersVisibility" Value="Column" />
+      <Setter Property="GridLinesVisibility" Value="None" />
+      <Setter Property="CanUserAddRows" Value="False" />
+      <Setter Property="IsReadOnly" Value="True" />
+      <Setter Property="AutoGenerateColumns" Value="False" />
+      <Setter Property="RowHeight" Value="40" />
+      <Setter Property="SelectionMode" Value="Single" />
+      <Setter Property="SelectionUnit" Value="FullRow" />
+    </Style>
+    <Style TargetType="DataGridColumnHeader">
+      <Setter Property="Background" Value="{StaticResource PanelRaisedBrush}" />
+      <Setter Property="Foreground" Value="{StaticResource MutedBrush}" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Padding" Value="11,9" />
+      <Setter Property="BorderThickness" Value="0" />
+    </Style>
+  </Window.Resources>
+
+  <Grid Margin="24">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="*" />
+      <RowDefinition Height="Auto" />
+    </Grid.RowDefinitions>
+
+    <DockPanel Grid.Row="0" Margin="0,0,0,18">
+      <StackPanel DockPanel.Dock="Left">
+        <TextBlock Text="HISTORIQUE LOCAL" FontSize="10" Foreground="{StaticResource MutedBrush}" FontWeight="Bold" />
+        <TextBlock Text="Rapports d’activité et de sécurité" FontSize="23" FontWeight="SemiBold" Margin="0,4,0,3" />
+        <TextBlock Text="Génère un état à l’instant T et consulte les rapports archivés par SentinelCore." FontSize="11" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" />
+      </StackPanel>
+      <Button x:Name="CloseButton" DockPanel.Dock="Right" Content="Fermer" Style="{StaticResource SecondaryButton}"
+              Padding="16,9" VerticalAlignment="Top" IsCancel="True" Click="Close_Click" />
+    </DockPanel>
+
+    <Border Grid.Row="1" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}"
+            BorderThickness="1" CornerRadius="12" Padding="13" Margin="0,0,0,16">
+      <DockPanel LastChildFill="True">
+        <WrapPanel DockPanel.Dock="Left" VerticalAlignment="Center">
+          <Button x:Name="GenerateButton" Content="Générer un instantané maintenant" Style="{StaticResource PrimaryButton}"
+                  Padding="16,10" Margin="0,0,9,0" Click="Generate_Click" />
+          <Button x:Name="RefreshButton" Content="Actualiser" Style="{StaticResource SecondaryButton}"
+                  Padding="14,10" Click="Refresh_Click" />
+        </WrapPanel>
+        <TextBlock x:Name="StatusText" Text="Chargement des rapports…" Foreground="{StaticResource MutedBrush}"
+                   FontSize="10" TextWrapping="Wrap" VerticalAlignment="Center" Margin="14,0,0,0" />
+      </DockPanel>
+    </Border>
+
+    <Grid Grid.Row="2">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="0.95*" MinWidth="300" />
+        <ColumnDefinition Width="1.05*" MinWidth="320" />
+      </Grid.ColumnDefinitions>
+
+      <Border Grid.Column="0" Style="{StaticResource PanelBorder}" Margin="0,0,8,0" Padding="0" ClipToBounds="True">
+        <Grid>
+          <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+          <StackPanel Margin="16,14,16,12">
+            <TextBlock Text="RAPPORTS DISPONIBLES" FontSize="10" Foreground="{StaticResource MutedBrush}" FontWeight="Bold" />
+            <TextBlock x:Name="ReportCountText" Text="0 rapport" FontSize="14" FontWeight="SemiBold" Margin="0,3,0,0" />
+          </StackPanel>
+          <DataGrid x:Name="ReportsGrid" Grid.Row="1" SelectionChanged="ReportsGrid_SelectionChanged"
+                    ScrollViewer.HorizontalScrollBarVisibility="Auto" ScrollViewer.VerticalScrollBarVisibility="Auto">
+            <DataGrid.Columns>
+              <DataGridTextColumn Header="DATE" Binding="{Binding CreatedAtLocal}" Width="130" />
+              <DataGridTextColumn Header="TYPE" Binding="{Binding ReportType}" Width="120" />
+              <DataGridTextColumn Header="SOURCE" Binding="{Binding TriggerLabel}" Width="*" />
+            </DataGrid.Columns>
+          </DataGrid>
+          <TextBlock x:Name="EmptyState" Grid.Row="1" Text="Aucun rapport enregistré. Génère un instantané pour commencer l’historique."
+                     Visibility="Collapsed" Foreground="{StaticResource MutedBrush}" FontSize="11" TextWrapping="Wrap"
+                     HorizontalAlignment="Center" VerticalAlignment="Center" Margin="26" />
+        </Grid>
+      </Border>
+
+      <Border Grid.Column="1" Style="{StaticResource PanelBorder}" Margin="8,0,0,0" Padding="18">
+        <Grid>
+          <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+          <StackPanel Margin="0,0,0,13">
+            <TextBlock Text="APERÇU DU RAPPORT" FontSize="10" Foreground="{StaticResource MutedBrush}" FontWeight="Bold" />
+            <TextBlock x:Name="PreviewTitle" Text="Sélectionne un rapport" FontSize="17" FontWeight="SemiBold" Margin="0,4,0,0" TextWrapping="Wrap" />
+          </StackPanel>
+          <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+            <StackPanel>
+              <TextBlock x:Name="PreviewMetadata" Foreground="{StaticResource MutedBrush}" FontSize="10" TextWrapping="Wrap" Margin="0,0,0,12" />
+              <Border Background="#0C1321" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="9" Padding="13">
+                <StackPanel>
+                  <TextBlock Text="RÉSUMÉ" FontSize="9" Foreground="{StaticResource MutedBrush}" FontWeight="Bold" />
+                  <TextBlock x:Name="PreviewSummary" Text="Les détails du rapport sélectionné apparaîtront ici." FontSize="12"
+                             TextWrapping="Wrap" Margin="0,5,0,0" />
+                </StackPanel>
+              </Border>
+              <TextBlock Text="ACTIVITÉS OBSERVÉES" FontSize="9" Foreground="{StaticResource MutedBrush}" FontWeight="Bold" Margin="0,16,0,7" />
+              <ItemsControl x:Name="ActivityItems">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <Border Background="{StaticResource PanelRaisedBrush}" CornerRadius="7" Padding="10,8" Margin="0,0,0,6">
+                      <DockPanel>
+                        <TextBlock DockPanel.Dock="Right" Text="{Binding CountLabel}" Foreground="{StaticResource AccentBrush}" FontSize="10" FontWeight="SemiBold" Margin="10,0,0,0" />
+                        <StackPanel>
+                          <TextBlock Text="{Binding Label}" FontSize="11" FontWeight="SemiBold" TextWrapping="Wrap" />
+                          <TextBlock Text="{Binding Detail}" FontSize="10" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="0,2,0,0" />
+                        </StackPanel>
+                      </DockPanel>
+                    </Border>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+              <TextBlock x:Name="NoActivitiesText" Text="Aucune activité n’est associée à ce rapport." FontSize="10"
+                         Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Visibility="Collapsed" />
+            </StackPanel>
+          </ScrollViewer>
+        </Grid>
+      </Border>
+    </Grid>
+
+    <TextBlock Grid.Row="3" Text="Les rapports d’activité consignent les événements observés même lorsqu’aucune menace n’est détectée. Une coupure brutale peut empêcher la création du rapport de clôture; les instantanés périodiques limitent la perte d’informations."
+               Foreground="{StaticResource MutedBrush}" FontSize="10" TextWrapping="Wrap" Margin="2,12,2,0" />
+  </Grid>
+</Window>

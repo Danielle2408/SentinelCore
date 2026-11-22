@@ -39,7 +39,7 @@ Les échanges entre démons utilisent des enveloppes JSON versionnées et des `c
 
 - Windows 10 ou 11, x64.
 - SDK .NET 10 pour compiler depuis les sources.
-- Ollama local et un modèle local compatible pour les conseils IA; D3 reste utilisable sans Ollama grâce à son comportement de repli déterministe.
+- Ollama et un modèle local compatible sont facultatifs pour l’IA. Au démarrage de la surveillance, le Centre vérifie Ollama et lance `ollama.exe serve` en arrière-plan s’il n’est pas déjà actif. Il ne télécharge jamais le modèle. Sans Ollama ou sans le modèle choisi, D3 conserve son comportement de repli déterministe.
 - Sysmon est facultatif pour le démarrage, mais nécessaire à plusieurs chaînes de visibilité détaillées de D2. Sans Sysmon, Defender et PowerShell peuvent encore fournir des événements; D2 doit alors afficher une couverture dégradée.
 - Les modèles ONNX de vérification visuelle D1 sont facultatifs; le script documenté les télécharge avec validation de hachage.
 - Inno Setup 6.7.4 est requis uniquement pour générer le setup.
@@ -56,7 +56,7 @@ dotnet build '.\Control Center\SentinelCore.ControlCenter.slnx' --configuration 
 dotnet run --project '.\Control Center\SentinelCore.ControlCenter\SentinelCore.ControlCenter.csproj' --configuration Release
 ```
 
-Le bouton de démarrage du Centre lance D3 avant D2, puis présente le panneau D1. D1 n’active pas la collecte simplement parce que le Centre s’ouvre : une authentification et une confirmation de démarrage restent nécessaires.
+Le bouton de démarrage du Centre vérifie et démarre Ollama, puis lance D3 avant D2 et présente le panneau D1. Si le modèle choisi est absent, installe-le manuellement (par exemple `ollama pull gemma3:1b`); SentinelCore ne consomme pas de connexion pour télécharger des poids. D1 n’active pas la collecte simplement parce que le Centre s’ouvre : une authentification et une confirmation de démarrage restent nécessaires.
 
 Pour créer un installateur autonome x64 avec l’icône SentinelCore :
 
@@ -81,7 +81,9 @@ Les capacités et limites par rapport aux outils existants sont détaillées dan
 
 ## Rapports et alertes facultatives
 
-D3 conserve les rapports localement dans `%LOCALAPPDATA%\SentinelCore\Demon3\reports`. L’intégration Telegram peut transmettre un PDF au chat configuré; elle reste désactivée tant qu’un Bot API token et un chat ID ne sont pas renseignés dans Configuration. Le token est protégé par DPAPI pour le compte Windows courant. Un PDF peut contenir l’image de vérification visuelle : il est alors transmis au service Telegram et au chat choisi.
+D3 conserve les rapports localement dans `%LOCALAPPDATA%\SentinelCore\Demon3\reports`. Il crée un rapport d’ouverture quand D3 démarre, un instantané périodique toutes les cinq minutes, puis un rapport de clôture à l’arrêt propre. Les événements reçus sont journalisés au fil de l’eau. Le bouton **Rapports et instantané** ouvre l’historique et permet de créer un rapport à la demande, même sans menace. Le démarrage D3 est postérieur à l’ouverture de la session Windows : l’heure de démarrage du PC affichée est estimée à partir de Windows, ce rapport ne s’exécute pas avant la connexion.
+
+Un arrêt normal via le Centre, `STOP` ou la fermeture du canal d’entrée de D3 déclenche le rapport final. Une coupure de courant ou un arrêt forcé peut empêcher ce dernier fichier; les écritures d’événements et les instantanés périodiques réduisent la perte, et une session inachevée est marquée interrompue au prochain démarrage de D3. Les rapports sont conservés localement dans `%LOCALAPPDATA%\SentinelCore\Demon3\reports`. L’intégration Telegram peut transmettre un PDF au chat configuré; elle reste désactivée tant qu’un Bot API token et un chat ID ne sont pas renseignés dans Configuration. Le token est protégé par DPAPI pour le compte Windows courant. Un PDF peut contenir l’image de vérification visuelle : il est alors transmis au service Telegram et au chat choisi.
 
 ## Données et limites de sécurité
 

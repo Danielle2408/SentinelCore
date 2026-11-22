@@ -31,6 +31,7 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<string> _logs = [];
     private readonly Dictionary<string, Process> _processes = new(StringComparer.Ordinal);
     private readonly AuthStore _auth;
+    private readonly OllamaServerManager _ollamaServerManager = new();
     private Demon1LearningControl? _d1Control;
     private readonly DispatcherTimer _refreshTimer = new() { Interval = TimeSpan.FromSeconds(2) };
     private string? _workspaceRoot;
@@ -220,6 +221,7 @@ public partial class MainWindow : Window
                     if (code != 0) { Log($"Construction échouée : {Path.GetFileName(solution)} (code {code})."); return; }
                 }
             }
+            await EnsureOllamaForSurveillanceAsync();
             StartD3();
             await Task.Delay(1500);
             StartD2();
@@ -236,10 +238,31 @@ public partial class MainWindow : Window
     private void StartD1_Click(object sender, RoutedEventArgs e) => NavigateD1_Click(sender, e);
     private async void StopD1_Click(object sender, RoutedEventArgs e) => await StopD1Async();
     private void StartD2_Click(object sender, RoutedEventArgs e) { try { StartD2(); } catch (Exception ex) { Log("D2 : " + ex.Message); } }
-    private void StartD3_Click(object sender, RoutedEventArgs e) { try { StartD3(); } catch (Exception ex) { Log("D3 : " + ex.Message); } }
+    private async void StartD3_Click(object sender, RoutedEventArgs e)
+    {
+        if (_isBusy) return;
+        SetBusy(true);
+        try
+        {
+            await EnsureOllamaForSurveillanceAsync();
+            StartD3();
+        }
+        catch (Exception ex) { Log("D3 : " + ex.Message); }
+        finally { SetBusy(false); RefreshProcessCards(); }
+    }
     private async void StopD2_Click(object sender, RoutedEventArgs e) => await StopProcessAsync("D2");
-    private async void StopD3_Click(object sender, RoutedEventArgs e) => await StopProcessAsync("D3");
+    private async void StopD3_Click(object sender, RoutedEventArgs e)
+    {
+        await StopProcessAsync("D3");
+        await StopOwnedOllamaIfD3StoppedAsync();
+    }
     private async void RefreshReports_Click(object sender, RoutedEventArgs e) => await RefreshReportsAsync();
+    private async void OpenReportCenter_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new ReportCenterWindow { Owner = this };
+        dialog.ShowDialog();
+        await RefreshReportsAsync();
+    }
     private async void CheckOllama_Click(object sender, RoutedEventArgs e) => await RefreshOllamaAsync(logResult: true);
 
     private void NavigateOverview_Click(object sender, RoutedEventArgs e) => ShowPage("overview");
@@ -424,6 +447,58 @@ public partial class MainWindow : Window
         StartConsoleProcess("D3", path, args);
     }
 
+    private async Task EnsureOllamaForSurveillanceAsync()
+    {
+        if (!IsValidModelName(_selectedAiModel))
+        {
+            Log("Ollama non démarré : le nom du modèle local configuré est invalide. D3 continuera avec ses règles de secours.");
+            return;
+        }
+
+        AiSummary.Text = "Démarrage d’Ollama…";
+        AiStatus.Text = "Vérification du serveur local";
+        OllamaDetail.Text = "SentinelCore vérifie l’API locale puis lance ollama.exe serve si nécessaire. Aucun modèle n’est téléchargé automatiquement.";
+        var result = await _ollamaServerManager.EnsureRunningAsync(_selectedAiModel);
+
+        if (!result.IsServerAvailable)
+        {
+            AiSummary.Text = "Mode de secours";
+            AiSummary.Foreground = (Brush)FindResource("AmberBrush");
+            AiStatus.Text = "Ollama indisponible";
+            OllamaDetail.Text = $"Le serveur local n’a pas démarré ({result.ReasonCode}). D3 reste disponible avec ses règles déterministes; installe Ollama et réessaie pour activer l’IA.";
+            Log($"Ollama indisponible ({result.ReasonCode}); la surveillance continue en mode de secours.");
+            return;
+        }
+
+        var serverMessage = result.ServerState == OllamaServerState.AlreadyRunning
+            ? "Ollama était déjà actif."
+            : "Ollama a été démarré automatiquement par SentinelCore.";
+        if (result.ModelState == OllamaSelectedModelState.Present)
+        {
+            AiSummary.Text = "Ollama prêt";
+            AiSummary.Foreground = (Brush)FindResource("AccentBrush");
+            AiStatus.Text = $"{_selectedAiModel} disponible";
+            OllamaDetail.Text = $"{serverMessage} Le modèle local {_selectedAiModel} est installé et prêt pour les cas ambigus.";
+            Log($"{serverMessage} Modèle local {_selectedAiModel} détecté.");
+        }
+        else if (result.ModelState == OllamaSelectedModelState.Absent)
+        {
+            AiSummary.Text = "Modèle absent";
+            AiSummary.Foreground = (Brush)FindResource("AmberBrush");
+            AiStatus.Text = "Téléchargement manuel requis";
+            OllamaDetail.Text = $"{serverMessage} Le serveur est actif, mais {_selectedAiModel} manque. Installe-le manuellement avec « ollama pull {_selectedAiModel} ». SentinelCore ne télécharge aucun poids.";
+            Log($"{serverMessage} Modèle {_selectedAiModel} absent; aucun téléchargement lancé.");
+        }
+        else
+        {
+            AiSummary.Text = "Ollama actif";
+            AiSummary.Foreground = (Brush)FindResource("AmberBrush");
+            AiStatus.Text = "Modèle à vérifier";
+            OllamaDetail.Text = $"{serverMessage} La liste des modèles est indisponible; vérifie que {_selectedAiModel} est installé. Aucun modèle n’a été téléchargé.";
+            Log($"{serverMessage} Vérification du modèle impossible ({result.ReasonCode ?? "raison inconnue"}).");
+        }
+    }
+
     private void StartConsoleProcess(string key, string exe, IReadOnlyList<string> args)
     {
         if (_processes.TryGetValue(key, out var old) && !old.HasExited) { Log($"{key} est déjà actif."); return; }
@@ -468,7 +543,23 @@ public partial class MainWindow : Window
         }
         await StopProcessAsync("D2");
         await StopProcessAsync("D3");
+        await StopOwnedOllamaIfD3StoppedAsync();
         RefreshProcessCards();
+    }
+
+    private async Task StopOwnedOllamaIfD3StoppedAsync()
+    {
+        if (IsObservedRunning("D3"))
+        {
+            Log("Ollama reste actif car un processus D3 est encore détecté.");
+            return;
+        }
+
+        var result = await _ollamaServerManager.StopOwnedServerAsync();
+        if (result == OllamaStopState.Stopped)
+            Log("Serveur Ollama arrêté car SentinelCore l’avait démarré et D3 est arrêté.");
+        else if (result == OllamaStopState.StopFailed)
+            Log("Arrêt du serveur Ollama lancé par SentinelCore impossible; il reste actif.");
     }
 
     private async Task StopD1Async()
