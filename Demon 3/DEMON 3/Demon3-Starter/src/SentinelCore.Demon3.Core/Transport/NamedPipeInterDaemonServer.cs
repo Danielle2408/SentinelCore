@@ -47,6 +47,9 @@ public sealed class NamedPipeInterDaemonServer : IAsyncDisposable
         IEnumerable<string>? additionalD1ClientSids = null, IEnumerable<string>? additionalD2ClientSids = null,
         IInboundMessageJournal? journal = null)
     {
+        var isolatedPipeName = Environment.GetEnvironmentVariable("SENTINELCORE_TEST_GUARD_PIPE_NAME");
+        if (pipeName == PipeName && !string.IsNullOrWhiteSpace(isolatedPipeName))
+            pipeName = isolatedPipeName;
         if (string.IsNullOrWhiteSpace(pipeName) || pipeName.Length > 128 || pipeName.Any(c => !char.IsAsciiLetterOrDigit(c) && c is not ('.' or '-' or '_')))
             throw new ArgumentException("Nom de pipe invalide.", nameof(pipeName));
         _validator = validator ?? new EnvelopeValidator();

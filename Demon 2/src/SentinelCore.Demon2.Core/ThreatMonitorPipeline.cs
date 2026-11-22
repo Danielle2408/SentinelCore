@@ -147,6 +147,8 @@ public sealed class ThreatMonitorPipeline(
                     await store.MarkMessageDeliveredAsync(message.MessageId, ct);
                     if (!guardAvailable)
                         Console.WriteLine($"GUARD_DELIVERY_OK | ACK reçu pour le message {message.MessageId}.");
+                    else if (message.MessageType == "HEARTBEAT")
+                        Console.WriteLine($"GUARD_HEARTBEAT_ACK | Battement D2 acquitté par D3 à {Clock.GetUtcNow():O}.");
                     guardAvailable = true;
                     failureReported = false;
                 }

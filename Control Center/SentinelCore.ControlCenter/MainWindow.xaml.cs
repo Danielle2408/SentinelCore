@@ -40,8 +40,8 @@ public partial class MainWindow : Window
     private bool _defenderQuickScanEnabled;
     private bool _isBusy;
     private bool _settingsLoaded;
-    private bool _guardListenerReady;
-    private bool _d2GuardAcknowledged;
+    private bool? _guardListenerReady;
+    private bool? _d2GuardAcknowledged;
     private DateTimeOffset? _lastD2GuardAcknowledgementUtc;
     private bool _autoStartAtLogon;
     private bool _keepDaemonsRunningOnClose;
@@ -429,6 +429,8 @@ public partial class MainWindow : Window
         if (_processes.TryGetValue(key, out var old) && !old.HasExited) { Log($"{key} est déjà actif."); return; }
         if (IsExternalProcessRunning(key)) { Log($"{key} est déjà actif hors du centre; aucun doublon n’a été lancé."); RefreshProcessCards(); return; }
         if (!File.Exists(exe)) throw new FileNotFoundException($"Exécutable introuvable : {exe}. Construis d’abord les modules.");
+        if (key == "D3") _guardListenerReady = null;
+        if (key == "D2") _d2GuardAcknowledged = null;
         var start = new ProcessStartInfo(exe)
         {
             WorkingDirectory = _workspaceRoot!, UseShellExecute = false, CreateNoWindow = true,
@@ -440,7 +442,13 @@ public partial class MainWindow : Window
         _processes[key] = process;
         process.OutputDataReceived += (_, data) => { if (data.Data is not null) ObserveDaemonOutput(key, data.Data, isError: false); };
         process.ErrorDataReceived += (_, data) => { if (data.Data is not null) ObserveDaemonOutput(key, data.Data, isError: true); };
-        process.Exited += (_, _) => Dispatcher.Invoke(() => { Log($"{key} arrêté (code {SafeExitCode(process)})."); RefreshProcessCards(); });
+        process.Exited += (_, _) => Dispatcher.Invoke(() =>
+        {
+            if (key == "D3") _guardListenerReady = null;
+            if (key == "D2") _d2GuardAcknowledged = null;
+            Log($"{key} arrêté (code {SafeExitCode(process)}).");
+            RefreshProcessCards();
+        });
         process.BeginOutputReadLine(); process.BeginErrorReadLine();
         Log($"{key} lancé : {Path.GetFileName(exe)} {string.Join(' ', args)}");
         RefreshProcessCards();
@@ -614,21 +622,27 @@ public partial class MainWindow : Window
         var d1PipeReady = _d1Control?.IsConnectedToDemon3 == true;
         var d1 = d1PipeReady || d1Collector || IsExternalProcessRunning("D1");
         var d2 = IsObservedRunning("D2"); var d3 = IsObservedRunning("D3");
+        var d2PipeConfirmed = d2 && _d2GuardAcknowledged == true;
+        // A live D1 handshake or a D2 ACK is positive evidence that an external D3
+        // listener accepted a real client, even when the Center cannot read its stdout.
+        bool? d3ListenerStatus = !d3 ? null
+            : d1PipeReady || d2PipeConfirmed ? true
+            : _guardListenerReady;
         SetCard(D1Status, D1Dot, d1PipeReady || d1Collector,
             d1PipeReady ? d1Collector ? "Connecté à D3 · collecte active" : "Connecté à D3 · collecte arrêtée"
             : d1Collector ? "Collecte active · canal D3 hors ligne" : IsExternalProcessRunning("D1") ? "Ancien contrôleur autonome détecté" : "Contrôleur intégré · D3 non connecté");
-        SetCard(D2Status, D2Dot, d2 && _d2GuardAcknowledged,
-            !d2 ? "Arrêté" : _d2GuardAcknowledged ? "Canal Guard acquitté" : IsRunning("D2") ? "Actif · transfert Guard en attente" : "Actif hors du centre · transport inconnu");
-        SetCard(D3Status, D3Dot, d3 && _guardListenerReady,
-            !d3 ? "Arrêté" : _guardListenerReady ? "Listener Guard prêt" : IsRunning("D3") ? "Processus actif · listener non confirmé" : "Actif hors du centre · listener inconnu");
+        SetCard(D2Status, D2Dot, d2PipeConfirmed,
+            !d2 ? "Arrêté" : d2PipeConfirmed ? "Canal Guard acquitté" : _d2GuardAcknowledged == false ? "Échec de transfert observé" : "Actif · transport non confirmé");
+        SetCard(D3Status, D3Dot, d3ListenerStatus == true,
+            !d3 ? "Arrêté" : d3ListenerStatus == true ? "Listener Guard confirmé par client" : d3ListenerStatus == false ? "Échec explicite du listener" : "Processus actif · listener non vérifié");
         var active = (d1 ? 1 : 0) + (d2 ? 1 : 0) + (d3 ? 1 : 0);
         ActiveDaemonCount.Text = $"{active} / 3";
-        var stackHealthy = d1PipeReady && d2 && d3 && _d2GuardAcknowledged && _guardListenerReady;
+        var stackHealthy = d1PipeReady && d2PipeConfirmed && d3 && d3ListenerStatus == true;
         OverallStatus.Text = stackHealthy ? "COMMUNICATION LOCALE CONFIRMÉE" : active == 0 ? "PRÊT À DÉMARRER" : "ÉTAT / TRANSPORT À VÉRIFIER";
         OverallStatus.Foreground = stackHealthy ? (Brush)FindResource("AccentBrush") : (Brush)FindResource("AmberBrush");
         OverallDot.Fill = OverallStatus.Foreground;
         D1StartButton.IsEnabled = true; D2StartButton.IsEnabled = !d2; D3StartButton.IsEnabled = !d3;
-        ActivityPage.SetTransportStatus(d1PipeReady, d2 && _d2GuardAcknowledged, d3 && _guardListenerReady,
+        ActivityPage.SetTransportStatus(d1PipeReady ? true : null, d2 ? _d2GuardAcknowledged : null, d3ListenerStatus,
             _lastD2GuardAcknowledgementUtc);
     }
 
@@ -641,7 +655,8 @@ public partial class MainWindow : Window
         }
         else if (daemon == "D2")
         {
-            if (line.Contains("GUARD_DELIVERY_OK", StringComparison.Ordinal))
+            if (line.Contains("GUARD_DELIVERY_OK", StringComparison.Ordinal)
+                || line.Contains("GUARD_HEARTBEAT_ACK", StringComparison.Ordinal))
             {
                 _d2GuardAcknowledged = true;
                 _lastD2GuardAcknowledgementUtc = DateTimeOffset.UtcNow;

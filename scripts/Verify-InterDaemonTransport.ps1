@@ -20,11 +20,13 @@ $d3Exe = if ([string]::IsNullOrWhiteSpace($D3ExecutablePath)) {
 $testRoot = Join-Path $env:TEMP ('SentinelCore-InterDaemon-Test-' + [guid]::NewGuid().ToString('N'))
 $dataDirectory = Join-Path $testRoot 'D2-data'
 $reportsDirectory = Join-Path $testRoot 'D3-reports'
+$pipeName = 'SentinelCore.Guard.Test.' + [guid]::NewGuid().ToString('N')
 $processes = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()
 $states = [System.Collections.Generic.List[object]]::new()
 $capturedLines = [System.Collections.Generic.List[string]]::new()
 $script:listenerReadySeen = $false
 $script:d2AcknowledgedSeen = $false
+$script:d2HeartbeatAcknowledgedSeen = $false
 $script:defenderScanModeSeen = $false
 $script:powerShellCaptureSeen = $false
 $script:powerShellCaptureSkipped = $false
@@ -43,6 +45,7 @@ function Start-LoggedProcess([string]$name, [string]$exePath, [string[]]$argumen
     $startInfo.RedirectStandardInput = $true
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
+    $startInfo.Environment['SENTINELCORE_TEST_GUARD_PIPE_NAME'] = $pipeName
     foreach ($argument in $arguments) { [void]$startInfo.ArgumentList.Add($argument) }
 
     $process = [System.Diagnostics.Process]::new()
@@ -69,6 +72,7 @@ function Receive-AvailableLines {
                 if ($state.Name -eq 'D3' -and $line -match 'GUARD_PIPE_READY') { $script:listenerReadySeen = $true }
                 if ($state.Name -eq 'D3' -and $line -match 'analyse rapide Microsoft Defender autorisée') { $script:defenderScanModeSeen = $true }
                 if ($state.Name -eq 'D2' -and $line -match 'GUARD_DELIVERY_OK') { $script:d2AcknowledgedSeen = $true }
+                if ($state.Name -eq 'D2' -and $line -match 'GUARD_HEARTBEAT_ACK') { $script:d2HeartbeatAcknowledgedSeen = $true }
                 if ($state.Name -eq 'D2' -and $streamName -eq 'Err' -and $line -match 'GUARD_DELIVERY_FAILED') {
                     throw "D2 signale un échec de livraison : $line"
                 }
@@ -196,7 +200,7 @@ try {
     if (-not $listenerReadySeen) { throw "D3 n'a pas confirmé son listener avant le délai." }
     if ($EnableDefenderScanMode -and -not $defenderScanModeSeen) { throw "D3 n'a pas confirmé le mode d'analyse rapide Defender avant le délai." }
 
-    $probe = [System.IO.Pipes.NamedPipeClientStream]::new('.', 'SentinelCore.Guard', [System.IO.Pipes.PipeDirection]::InOut)
+    $probe = [System.IO.Pipes.NamedPipeClientStream]::new('.', $pipeName, [System.IO.Pipes.PipeDirection]::InOut)
     try { $probe.Connect(3000) }
     finally { $probe.Dispose() }
 
@@ -211,6 +215,15 @@ try {
     }
     if (-not $d2AcknowledgedSeen) {
         throw "D2 n'a pas reçu d'accusé D3 en $TimeoutSeconds secondes."
+    }
+    $heartbeatDeadline = [DateTimeOffset]::UtcNow.AddSeconds($TimeoutSeconds)
+    while (-not $d2HeartbeatAcknowledgedSeen -and [DateTimeOffset]::UtcNow -lt $heartbeatDeadline) {
+        Receive-AvailableLines
+        if ($d2.Process.HasExited) { throw "D2 s'est arrêté avec le code $($d2.Process.ExitCode) avant le second accusé." }
+        Start-Sleep -Milliseconds 100
+    }
+    if (-not $d2HeartbeatAcknowledgedSeen) {
+        throw "D2 a obtenu un ACK initial, mais aucun battement périodique n'a été acquitté en $TimeoutSeconds secondes."
     }
 
     if ($ProbePowerShellCapture) {
@@ -241,7 +254,7 @@ try {
     if ($EnableDefenderScanMode) {
         $message = 'RÉSULTAT : D3 confirme le mode Defender (aucun scan déclenché), son listener accepte un client local, et D2 a transmis un message acquitté par D3.'
     } else {
-        $message = 'RÉSULTAT : D3 a créé son listener et accepté un client local; D2 a ensuite envoyé un message reçu et acquitté par D3.'
+        $message = 'RÉSULTAT : D3 a créé son listener; D2 a obtenu un ACK de livraison puis un ACK de battement périodique sur la même intégration.'
     }
     if ($ProbePowerShellCapture -and $powerShellCaptureSeen) { $message += ' D2 a aussi ingéré un événement PowerShell réel sans en conserver le texte.' }
 if ($ProbePowerShellCapture -and $powerShellCaptureSkipped) { $message += ' Le test réel 4104 a été ignoré faute de nouvel événement natif émis; seule la normalisation unitaire est vérifiée.' }
@@ -263,9 +276,9 @@ finally {
     }
 }
 
-$verificationFailed = -not $listenerReadySeen -or -not $d2AcknowledgedSeen -or ($EnableDefenderScanMode -and -not $defenderScanModeSeen) -or ($ProbePowerShellCapture -and -not $powerShellCaptureSeen -and -not $powerShellCaptureSkipped)
+$verificationFailed = -not $listenerReadySeen -or -not $d2AcknowledgedSeen -or -not $d2HeartbeatAcknowledgedSeen -or ($EnableDefenderScanMode -and -not $defenderScanModeSeen) -or ($ProbePowerShellCapture -and -not $powerShellCaptureSeen -and -not $powerShellCaptureSkipped)
 if ($verificationFailed) {
     throw "Le test interprocessus n'a pas confirmé les deux étapes attendues."
 }
 Write-Host 'Messages de preuve :'
-$capturedLines | Where-Object { $_ -match 'GUARD_PIPE_READY|GUARD_DELIVERY_OK|GUARD_DELIVERY_FAILED|analyse rapide Microsoft Defender autorisée' } | ForEach-Object { Write-Host $_ }
+$capturedLines | Where-Object { $_ -match 'GUARD_PIPE_READY|GUARD_DELIVERY_OK|GUARD_HEARTBEAT_ACK|GUARD_DELIVERY_FAILED|analyse rapide Microsoft Defender autorisée' } | ForEach-Object { Write-Host $_ }

@@ -26,7 +26,16 @@ public sealed class NamedPipeInterDaemonBus : IRequestReceivingInterDaemonBus, I
     private bool _welcomed;
     private bool _disposed;
 
-    public NamedPipeInterDaemonBus(string pipeName = "SentinelCore.Guard") => _pipeName = pipeName;
+    public NamedPipeInterDaemonBus(string pipeName = "SentinelCore.Guard")
+    {
+        var isolatedPipeName = Environment.GetEnvironmentVariable("SENTINELCORE_TEST_GUARD_PIPE_NAME");
+        if (pipeName == "SentinelCore.Guard" && !string.IsNullOrWhiteSpace(isolatedPipeName))
+            pipeName = isolatedPipeName;
+        if (string.IsNullOrWhiteSpace(pipeName) || pipeName.Length > 128
+            || pipeName.Any(c => !char.IsAsciiLetterOrDigit(c) && c is not ('.' or '-' or '_')))
+            throw new ArgumentException("Nom de pipe Guard invalide.", nameof(pipeName));
+        _pipeName = pipeName;
+    }
 
     public IAsyncEnumerable<InterDaemonEnvelope> ReadRequestsAsync(CancellationToken cancellationToken = default)
         => _requests.Reader.ReadAllAsync(cancellationToken);
