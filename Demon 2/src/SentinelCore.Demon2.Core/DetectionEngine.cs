@@ -22,8 +22,16 @@ public sealed class DetectionEngine(TimeSpan? correlationWindow = null, TimeSpan
         var gaps = new List<TelemetryGap>();
 
         if (current.EventType == ThreatEventType.TELEMETRY_GAP)
-            gaps.Add(new(Guid.NewGuid().ToString("N"), current.Source, nowUtc,
-                "Sysmon signale un changement de sa configuration de collecte.", 0, ["collector_configuration"]));
+        {
+            var providerEventId = current.Fields?.GetValueOrDefault("providerEventId");
+            var (reason, missingField) = providerEventId switch
+            {
+                "4" => ("Sysmon signale que son service est arrêté; la télémétrie peut être indisponible.", "source_availability"),
+                "16" => ("Sysmon signale une modification de sa configuration; la couverture peut avoir changé.", "collector_configuration"),
+                _ => ("Une lacune ou une modification de la source de télémétrie a été signalée.", "telemetry_source_state")
+            };
+            gaps.Add(new(Guid.NewGuid().ToString("N"), current.Source, nowUtc, reason, 0, [missingField]));
+        }
 
         var missing = MissingTelemetry(current, text);
         if (missing.Count > 0)

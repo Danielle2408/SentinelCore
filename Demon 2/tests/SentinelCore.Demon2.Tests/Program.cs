@@ -139,6 +139,16 @@ internal static class Demon2Checks
         var configResult = new DetectionEngine().Evaluate(configEvent!, [configEvent!], Now);
         True(configResult.Gaps.Count > 0 && configResult.Findings.Count == 0,
             "A source configuration change alone is telemetry health evidence, not a confirmed threat.");
+        True(configResult.Gaps.Single().Reason.Contains("configuration", StringComparison.OrdinalIgnoreCase) &&
+            configResult.Gaps.Single().MissingFields.Contains("collector_configuration"),
+            "Sysmon event 16 must describe configuration coverage, not a service outage.");
+        var serviceStopped = EventXml(4, 105, "State", "Stopped");
+        True(normalizer.TryNormalize(new(serviceStopped, null), out var stoppedEvent, out _), "Sysmon service stop should be observed.");
+        var stoppedResult = new DetectionEngine().Evaluate(stoppedEvent!, [stoppedEvent!], Now);
+        True(stoppedResult.Gaps.Single().Reason.Contains("service", StringComparison.OrdinalIgnoreCase) &&
+            stoppedResult.Gaps.Single().MissingFields.Contains("source_availability") &&
+            !stoppedResult.Gaps.Single().MissingFields.Contains("collector_configuration"),
+            "Sysmon event 4 Stopped must indicate source availability loss, not a configuration change.");
         True(!normalizer.TryNormalize(new(EventXml(25, 104, "Image", "test.exe"), null), out _, out _), "Unmapped process-tampering event should be rejected visibly.");
         return Task.CompletedTask;
     }
