@@ -24,7 +24,7 @@ Exemple : la fenêtre reste ouverte toute la journée. La collecte ne commence q
 
 4. Ce que le démon apprend
 
-Le démon calcule des mesures résumées sur des périodes configurables : rythme de frappe, durée d’appui et pauses entre les touches, vitesse et variations de la souris, changements de direction et intervalles entre les clics. Il n’enregistre pas les lettres tapées, les mots de passe, le texte du presse-papiers, ni les coordonnées détaillées de la souris.
+Le démon calcule des mesures résumées sur des périodes configurables : rythme de frappe, durée d’appui et pauses entre les touches, vitesse et variations de la souris, changements de direction et intervalles entre les clics. Il n’enregistre pas les lettres tapées, les mots de passe, le texte du presse-papiers, ni les coordonnées détaillées de la souris. Les mesures clavier/souris sont conservées au plus 24 heures dans l’historique, puis supprimées; le profil garde seulement des résumés nécessaires pour apprendre les habitudes.
 
 Exemple : il peut enregistrer « rythme moyen de frappe = valeur X » sans conserver la phrase qui a été écrite.
 
@@ -36,9 +36,9 @@ Exemple : après une période active, tu peux ouvrir la base et voir la date, la
 
 6. Paramètres et arrêt
 
-Le bouton « Paramètres » permet de choisir la durée des périodes de mesure (10 à 60 secondes) et le délai d’arrêt après inactivité (30 à 900 secondes). Ces changements s’appliquent au prochain démarrage. « Arrêter » met fin à la collecte; les périodes déjà sauvegardées restent dans la base. Fermer l’application demande si la collecte doit être arrêtée.
+Le bouton « Paramètres » permet de choisir la durée des périodes de mesure (10 à 60 secondes), le délai d’arrêt après inactivité (30 à 900 secondes) et la durée de conservation des applications/ressources (1 à 90 jours, 30 par défaut). L’historique de contexte est aussi plafonné à 20 000 périodes par profil. Ces changements s’appliquent au prochain démarrage. « Arrêter » met fin à la collecte; les périodes encore dans leur délai de conservation restent dans la base. Fermer l’application demande si la collecte doit être arrêtée.
 
-Exemple : avec une inactivité réglée à 90 secondes, le collecteur s’arrête si Windows ne reçoit aucune entrée clavier/souris pendant 90 secondes.
+Exemple : avec une inactivité réglée à 90 secondes, le collecteur s’arrête si Windows ne reçoit aucune entrée clavier/souris pendant 90 secondes. Avec une conservation de 7 jours, les anciens résumés d’applications disparaissent après une semaine; aucun texte tapé n’a jamais été gardé.
 
 7. Reconnaissance et limites
 
@@ -49,3 +49,9 @@ Ce mode apprend et enregistre un profil de comportement. Il ne décide pas à lu
 L’ancienne version remplaçait status.json par déplacement d’un fichier temporaire. Sur ton PC, Windows refusait ce remplacement pendant que le fichier était utilisé. Le collecteur écrit maintenant le nouveau statut dans le fichier en autorisant la lecture simultanée; l’interface réessaie la lecture si elle tombe au milieu de l’écriture.
 
 Un test a créé d’abord un status.json existant, lancé l’EXE, vérifié la mise à jour puis arrêté le collecteur : les trois étapes ont réussi sans « Access to the path is denied ».
+
+9. Donner le contexte de session à D3
+
+Quand D3 demande des précisions, D1 répond avec le contexte d’application appris et trois informations générales sur la session Windows : active, inactive ou verrouillée; locale ou à distance; authentification récente ou inconnue. D1 s’appuie sur les notifications Windows de verrouillage et sur le temps écoulé depuis la dernière entrée. Si Windows ne fournit pas une information fiable, D1 envoie « inconnu » au lieu de deviner. Pour l’instant, l’authentification récente reste « inconnue ».
+
+Exemple : si la session Windows est utilisée depuis une connexion à distance, D1 envoie « REMOTE ». D3 peut transmettre cette seule catégorie à D2 pour compléter un dossier. D2 ne reçoit ni profil d’habitudes, ni mesures clavier/souris, ni image, ni nom de fenêtre.

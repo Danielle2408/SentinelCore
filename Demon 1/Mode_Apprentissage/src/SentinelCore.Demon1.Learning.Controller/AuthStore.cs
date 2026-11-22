@@ -11,6 +11,11 @@ public sealed class AuthStore
     private const int Iterations = 600_000;
     private readonly string _path;
     private readonly string _sid;
+    private bool _authenticatedInThisProcess;
+
+    internal bool IsAuthenticatedInThisProcess => _authenticatedInThisProcess;
+
+    internal void MarkOwnerAuthenticated() => _authenticatedInThisProcess = true;
 
     public AuthStore(string? dataRoot = null)
     {
@@ -30,6 +35,7 @@ public sealed class AuthStore
             var protectedBytes = Dpapi.Protect(stored, Encoding.UTF8.GetBytes(_sid));
             Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
             File.WriteAllBytes(_path, protectedBytes);
+            _authenticatedInThisProcess = true;
             CryptographicOperations.ZeroMemory(verifier);
             CryptographicOperations.ZeroMemory(stored);
             CryptographicOperations.ZeroMemory(protectedBytes);
@@ -53,6 +59,7 @@ public sealed class AuthStore
             {
                 var actual = Rfc2898DeriveBytes.Pbkdf2(bytes, salt, credential.Iterations, HashAlgorithmName.SHA256, expected.Length);
                 var valid = CryptographicOperations.FixedTimeEquals(actual, expected);
+                if (valid) _authenticatedInThisProcess = true;
                 CryptographicOperations.ZeroMemory(actual);
                 return valid;
             }

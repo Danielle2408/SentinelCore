@@ -23,6 +23,7 @@ public sealed class ConservativeAdmissionPolicy : ILearningAdmissionPolicy
     public LearningDecision Evaluate(BehaviorObservation o, BehaviorReport r)
     {
         if (!o.ConsentEnabled) return new(AdmissionStatus.Rejected,"Consentement désactivé.");
+        if (!double.IsFinite(o.Quality) || o.Quality is < 0 or > 1) return new(AdmissionStatus.Quarantined,"Qualité d’observation invalide.");
         if (o.SeriousThreatFromD2) return new(AdmissionStatus.Quarantined,"Finding sérieux D2: apprentissage gelé.");
         if (o.GuardSuspicion) return new(AdmissionStatus.Quarantined,"Suspicion Guard: observation mise en quarantaine.");
         if (o.ConflictingSignals) return new(AdmissionStatus.Quarantined,"Signaux contradictoires.");
@@ -37,6 +38,12 @@ public sealed class BehaviorEngine(IProfileStore store, ILearningAdmissionPolicy
     private readonly IProfileStore _store=store; private readonly ILearningAdmissionPolicy _admission=admission;
     public BehaviorReport Process(BehaviorObservation observation)
     {
+        ArgumentNullException.ThrowIfNull(observation);
+        var invalidReason = ValidateObservation(observation);
+        if (invalidReason is not null)
+            return new(observation.Sid ?? string.Empty, ProfileState.DEGRADED, 0, 0, [],
+                "Observation invalide; apprentissage ignoré.", $"{AdmissionStatus.Quarantined}: {invalidReason}");
+
         var profile=_store.Load(observation.Sid) ?? Empty();
         var results=new List<FeatureResult>();
         foreach(var (name,value) in observation.NumericFeatures)
@@ -67,6 +74,32 @@ public sealed class BehaviorEngine(IProfileStore store, ILearningAdmissionPolicy
         if(decision.Status==AdmissionStatus.Admitted && !profile.LearningFrozen) { profile=Update(profile,observation); _store.Save(observation.Sid,profile); }
         else { _store.RecordRejected(observation.Sid,observation.TimestampUtc,decision.Reason,observation.NumericFeatures.Keys.ToArray()); if(observation.SeriousThreatFromD2||observation.GuardSuspicion) { profile=profile with{LearningFrozen=true,Version=profile.Version+1,UpdatedUtc=observation.TimestampUtc}; _store.Save(observation.Sid,profile); } }
         return provisional with { AdmissionReason=$"{decision.Status}: {decision.Reason}" };
+    }
+
+    private static string? ValidateObservation(BehaviorObservation observation)
+    {
+        if (string.IsNullOrWhiteSpace(observation.Sid) || observation.Sid.Length > 128
+            || observation.Sid.Any(char.IsControl)) return "Identifiant de session invalide.";
+        if (observation.TimestampUtc.Offset != TimeSpan.Zero) return "L’horodatage doit être en UTC.";
+        if (!double.IsFinite(observation.Quality) || observation.Quality is < 0 or > 1)
+            return "La qualité doit être un nombre fini compris entre 0 et 1.";
+        if (observation.NumericFeatures is null || observation.NumericFeatures.Count > 64)
+            return "Le nombre de caractéristiques est invalide.";
+        foreach (var (name, value) in observation.NumericFeatures)
+        {
+            if (string.IsNullOrWhiteSpace(name) || name.Length > 64
+                || name.Any(c => !char.IsAsciiLetterOrDigit(c) && c is not ('_' or '-' or '.')))
+                return "Nom de caractéristique invalide.";
+            if (!double.IsFinite(value) || Math.Abs(value) > 1_000_000_000)
+                return "Valeur de caractéristique non finie ou hors limites.";
+        }
+        if (observation.AppCategory is { } app
+            && (app.Length > 64 || app.Any(c => char.IsControl(c)))) return "Catégorie d’application invalide.";
+        if (string.IsNullOrWhiteSpace(observation.SessionState) || observation.SessionState.Length > 32
+            || observation.SessionState.Any(char.IsControl)) return "État de session invalide.";
+        if (observation.LocalRemote is { } locality
+            && (locality.Length > 32 || locality.Any(char.IsControl))) return "État local/distant invalide.";
+        return null;
     }
     public bool ResumeLearning(string sid,bool ownerVerified)
     {
