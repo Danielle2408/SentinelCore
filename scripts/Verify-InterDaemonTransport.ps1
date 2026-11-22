@@ -15,7 +15,7 @@ $d2Exe = if ([string]::IsNullOrWhiteSpace($D2ExecutablePath)) {
     Join-Path $workspaceRoot 'Demon 2\src\SentinelCore.Demon2.Service\bin\Release\net10.0\SentinelCore.Demon2.Service.exe'
 } else { [System.IO.Path]::GetFullPath($D2ExecutablePath) }
 $d3Exe = if ([string]::IsNullOrWhiteSpace($D3ExecutablePath)) {
-    Join-Path $workspaceRoot 'Demon 3\DEMON 3\Demon3-Starter\src\SentinelCore.Demon3.Cli\bin\Release\net10.0\SentinelCore.Demon3.Cli.exe'
+    Join-Path $workspaceRoot 'Demon 3\DEMON 3\Demon3-Starter\src\SentinelCore.Demon3.Cli\bin\Release\net10.0-windows10.0.19041.0\SentinelCore.Demon3.Cli.exe'
 } else { [System.IO.Path]::GetFullPath($D3ExecutablePath) }
 $testRoot = Join-Path $env:TEMP ('SentinelCore-InterDaemon-Test-' + [guid]::NewGuid().ToString('N'))
 $dataDirectory = Join-Path $testRoot 'D2-data'

@@ -76,7 +76,7 @@ $publishTargets = @(
     ),
     @(
         (Join-Path $workspaceRoot 'Demon 3\DEMON 3\Demon3-Starter\src\SentinelCore.Demon3.Cli\SentinelCore.Demon3.Cli.csproj'),
-        (Join-Path $payloadRoot 'Demon 3\DEMON 3\Demon3-Starter\src\SentinelCore.Demon3.Cli\bin\Release\net10.0')
+        (Join-Path $payloadRoot 'Demon 3\DEMON 3\Demon3-Starter\src\SentinelCore.Demon3.Cli\bin\Release\net10.0-windows10.0.19041.0')
     ),
     @(
         (Join-Path $workspaceRoot 'Control Center\SentinelCore.ControlCenter\SentinelCore.ControlCenter.csproj'),
@@ -99,7 +99,7 @@ $expectedExecutables = @(
     (Join-Path $payloadRoot 'Control Center\SentinelCore.ControlCenter\bin\Release\net10.0-windows10.0.19041.0\SentinelCore.ControlCenter.exe'),
     (Join-Path $payloadRoot 'Demon 1\Mode_Apprentissage\src\SentinelCore.Demon1.Learning.Controller\bin\Release\net10.0-windows10.0.19041.0\SentinelCore.Demon1.Learning.Controller.exe'),
     (Join-Path $payloadRoot 'Demon 2\src\SentinelCore.Demon2.Service\bin\Release\net10.0\SentinelCore.Demon2.Service.exe'),
-    (Join-Path $payloadRoot 'Demon 3\DEMON 3\Demon3-Starter\src\SentinelCore.Demon3.Cli\bin\Release\net10.0\SentinelCore.Demon3.Cli.exe')
+    (Join-Path $payloadRoot 'Demon 3\DEMON 3\Demon3-Starter\src\SentinelCore.Demon3.Cli\bin\Release\net10.0-windows10.0.19041.0\SentinelCore.Demon3.Cli.exe')
 )
 foreach ($path in $expectedExecutables) {
     if (-not (Test-Path -LiteralPath $path)) { throw "Exécutable requis absent du paquet : $path" }

@@ -441,7 +441,7 @@ public partial class MainWindow : Window
     {
         if (!EnsureWorkspace()) return;
         if (!IsValidModelName(_selectedAiModel)) throw new InvalidOperationException("Le nom du modèle Ollama est invalide.");
-        var path = Path.Combine(_workspaceRoot!, "Demon 3", "DEMON 3", "Demon3-Starter", "src", "SentinelCore.Demon3.Cli", "bin", "Release", "net10.0", "SentinelCore.Demon3.Cli.exe");
+        var path = Path.Combine(_workspaceRoot!, "Demon 3", "DEMON 3", "Demon3-Starter", "src", "SentinelCore.Demon3.Cli", "bin", "Release", "net10.0-windows10.0.19041.0", "SentinelCore.Demon3.Cli.exe");
         var args = new List<string> { "--serve", "--model", _selectedAiModel };
         if (_defenderQuickScanEnabled) args.Add("--enable-defender-scan");
         StartConsoleProcess("D3", path, args);
@@ -816,7 +816,7 @@ public partial class MainWindow : Window
         if (!EnsureWorkspace()) return false;
         return File.Exists(Path.Combine(_workspaceRoot!, "Demon 1", "Mode_Apprentissage", "src", "SentinelCore.Demon1.Learning.Controller", "bin", "Release", "net10.0-windows10.0.19041.0", "SentinelCore.Demon1.Learning.Controller.exe"))
             && File.Exists(Path.Combine(_workspaceRoot!, "Demon 2", "src", "SentinelCore.Demon2.Service", "bin", "Release", "net10.0", "SentinelCore.Demon2.Service.exe"))
-            && File.Exists(Path.Combine(_workspaceRoot!, "Demon 3", "DEMON 3", "Demon3-Starter", "src", "SentinelCore.Demon3.Cli", "bin", "Release", "net10.0", "SentinelCore.Demon3.Cli.exe"));
+            && File.Exists(Path.Combine(_workspaceRoot!, "Demon 3", "DEMON 3", "Demon3-Starter", "src", "SentinelCore.Demon3.Cli", "bin", "Release", "net10.0-windows10.0.19041.0", "SentinelCore.Demon3.Cli.exe"));
     }
 
     private void ChooseWorkspace_Click(object sender, RoutedEventArgs e)
