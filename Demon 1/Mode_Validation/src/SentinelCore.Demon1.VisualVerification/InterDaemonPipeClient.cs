@@ -53,11 +53,17 @@ public sealed class InterDaemonPipeClient : IAsyncDisposable
 
     public event EventHandler<InterDaemonEnvelope>? MessageReceived;
     public event EventHandler<Exception>? ConnectionFailed;
+    public bool IsConnectedToServer => _connected && _pipe.IsConnected && !_disposed;
 
-    public InterDaemonPipeClient(string pipeName = "SentinelCore.Guard")
+    public InterDaemonPipeClient(string pipeName = "SentinelCore.Guard") : this(pipeName, allowIsolatedTestPipe: false) { }
+
+    internal InterDaemonPipeClient(string pipeName, bool allowIsolatedTestPipe)
     {
-        if (pipeName != "SentinelCore.Guard") throw new ArgumentException("Nom de canal non autorisé par le contrat commun.", nameof(pipeName));
-        _pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous, TokenImpersonationLevel.Impersonation);
+        if (string.IsNullOrWhiteSpace(pipeName) || pipeName.Length > 128
+            || pipeName.Any(c => !char.IsAsciiLetterOrDigit(c) && c is not ('.' or '-' or '_'))
+            || (!allowIsolatedTestPipe && pipeName != "SentinelCore.Guard"))
+            throw new ArgumentException("Nom de canal non autorisé par le contrat commun.", nameof(pipeName));
+        _pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous, TokenImpersonationLevel.Identification);
     }
 
     public async Task<JsonElement> ConnectAndHandshakeAsync(CancellationToken cancellationToken = default)

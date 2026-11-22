@@ -8,12 +8,17 @@ namespace SentinelCore.Demon1.Learning;
 /// <summary>SQLite learning database. Feature values and profiles are DPAPI-protected per row.</summary>
 public sealed class SqliteLearningProfileRepository : IAtomicLearningRepository, IContextActivityRepository, IDisposable
 {
+    private const int LearningObservationRetentionHours = 24;
+    private const int MaximumLearningObservationRows = 10_000;
+    private const int MaximumContextActivityRowsPerProfile = 20_000;
     private readonly string _connectionString;
+    private readonly int _contextRetentionDays;
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = false };
     private bool _disposed;
 
-    public SqliteLearningProfileRepository(string databasePath)
+    public SqliteLearningProfileRepository(string databasePath, int contextRetentionDays = 30)
     {
+        _contextRetentionDays = Math.Clamp(contextRetentionDays, 1, 90);
         var fullPath = Path.GetFullPath(databasePath);
         Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
         _connectionString = new SqliteConnectionStringBuilder { DataSource = fullPath, Mode = SqliteOpenMode.ReadWriteCreate, Cache = SqliteCacheMode.Shared }.ToString();
@@ -23,6 +28,7 @@ public sealed class SqliteLearningProfileRepository : IAtomicLearningRepository,
             PRAGMA journal_mode=WAL;
             PRAGMA foreign_keys=ON;
             PRAGMA busy_timeout=5000;
+            PRAGMA secure_delete=ON;
             CREATE TABLE IF NOT EXISTS learning_profiles (
                 sid_hash TEXT PRIMARY KEY NOT NULL,
                 updated_utc TEXT NOT NULL,
@@ -93,7 +99,9 @@ public sealed class SqliteLearningProfileRepository : IAtomicLearningRepository,
         ObjectDisposedException.ThrowIf(_disposed, this);
         var protectedFeatures = CurrentUserDpapi.Protect(JsonSerializer.SerializeToUtf8Bytes(window.Features, JsonOptions), window.Sid);
         using var connection = Open();
+        using var transaction = connection.BeginTransaction();
         using var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = """
             INSERT INTO learning_observations(sid_hash,observed_utc,context_key,disposition,state,accepted_windows,quality,reason,protected_features)
             VALUES($sid,$at,$context,$disposition,$state,$count,$quality,$reason,$features);
@@ -108,6 +116,8 @@ public sealed class SqliteLearningProfileRepository : IAtomicLearningRepository,
         command.Parameters.AddWithValue("$reason", result.Reason);
         command.Parameters.Add("$features", SqliteType.Blob).Value = protectedFeatures;
         command.ExecuteNonQuery();
+        PruneLearningHistory(connection, transaction, HashSid(window.Sid), DateTimeOffset.UtcNow);
+        transaction.Commit();
     }
 
     public void Record(LearningWindow window, LearningResult result, LearningProfile? updatedProfile)
@@ -148,6 +158,7 @@ public sealed class SqliteLearningProfileRepository : IAtomicLearningRepository,
         observationCommand.Parameters.AddWithValue("$reason", result.Reason);
         observationCommand.Parameters.Add("$features", SqliteType.Blob).Value = protectedFeatures;
         observationCommand.ExecuteNonQuery();
+        PruneLearningHistory(connection, transaction, sidHash, DateTimeOffset.UtcNow);
         transaction.Commit();
     }
 
@@ -156,6 +167,7 @@ public sealed class SqliteLearningProfileRepository : IAtomicLearningRepository,
         ObjectDisposedException.ThrowIf(_disposed, this);
         take = Math.Clamp(take, 1, 1000);
         using var connection = Open();
+        PruneLearningHistory(connection, null, HashSid(sid), DateTimeOffset.UtcNow);
         using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT id,observed_utc,context_key,disposition,reason,state,accepted_windows,quality,protected_features
@@ -180,10 +192,35 @@ public sealed class SqliteLearningProfileRepository : IAtomicLearningRepository,
     public long CountObservations(string sid)
     {
         using var connection = Open();
+        PruneLearningHistory(connection, null, HashSid(sid), DateTimeOffset.UtcNow);
         using var command = connection.CreateCommand();
         command.CommandText = "SELECT COUNT(*) FROM learning_observations WHERE sid_hash=$sid";
         command.Parameters.AddWithValue("$sid", HashSid(sid));
         return (long)(command.ExecuteScalar() ?? 0L);
+    }
+
+    /// <summary>Applies configured retention to all D1 history for this Windows user.</summary>
+    public void PruneExpiredHistory(string sid)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        using var connection = Open();
+        using var transaction = connection.BeginTransaction();
+        var sidHash = HashSid(sid);
+        PruneLearningHistory(connection, transaction, sidHash, DateTimeOffset.UtcNow);
+        using var profilesCommand = connection.CreateCommand();
+        profilesCommand.Transaction = transaction;
+        profilesCommand.CommandText = "SELECT DISTINCT profile_id FROM context_activity WHERE sid_hash=$sid";
+        profilesCommand.Parameters.AddWithValue("$sid", sidHash);
+        using var reader = profilesCommand.ExecuteReader();
+        var profileIds = new List<string>();
+        while (reader.Read()) profileIds.Add(reader.GetString(0));
+        reader.Close();
+        foreach (var profileId in profileIds)
+        {
+            ValidateProfileId(profileId);
+            PruneContextActivity(connection, transaction, sidHash, profileId, DateTimeOffset.UtcNow);
+        }
+        transaction.Commit();
     }
 
     public void AppendContextActivity(string sid, ContextActivityObservation observation)
@@ -193,13 +230,17 @@ public sealed class SqliteLearningProfileRepository : IAtomicLearningRepository,
         if (observation.ApplicationName.Length > 96) throw new ArgumentException("Nom d’application trop long.", nameof(observation));
         var protectedObservation = CurrentUserDpapi.Protect(JsonSerializer.SerializeToUtf8Bytes(observation, JsonOptions), sid);
         using var connection = Open();
+        using var transaction = connection.BeginTransaction();
         using var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = "INSERT INTO context_activity(sid_hash,profile_id,observed_utc,protected_observation) VALUES($sid,$profile,$at,$payload)";
         command.Parameters.AddWithValue("$sid", HashSid(sid));
         command.Parameters.AddWithValue("$profile", observation.ProfileId);
         command.Parameters.AddWithValue("$at", observation.ObservedAtUtc.ToString("O"));
         command.Parameters.Add("$payload", SqliteType.Blob).Value = protectedObservation;
         command.ExecuteNonQuery();
+        PruneContextActivity(connection, transaction, HashSid(sid), observation.ProfileId, DateTimeOffset.UtcNow);
+        transaction.Commit();
     }
 
     public IReadOnlyList<ContextActivityObservation> ReadRecentContextActivity(string sid, string profileId, int take = 5000)
@@ -208,6 +249,7 @@ public sealed class SqliteLearningProfileRepository : IAtomicLearningRepository,
         ValidateProfileId(profileId);
         take = Math.Clamp(take, 1, 20000);
         using var connection = Open();
+        PruneContextActivity(connection, null, HashSid(sid), profileId, DateTimeOffset.UtcNow);
         using var command = connection.CreateCommand();
         command.CommandText = "SELECT protected_observation FROM context_activity WHERE sid_hash=$sid AND profile_id=$profile ORDER BY id DESC LIMIT $take";
         command.Parameters.AddWithValue("$sid", HashSid(sid));
@@ -224,6 +266,43 @@ public sealed class SqliteLearningProfileRepository : IAtomicLearningRepository,
         return rows;
     }
 
+    private void PruneLearningHistory(SqliteConnection connection, SqliteTransaction? transaction, string sidHash, DateTimeOffset nowUtc)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            DELETE FROM learning_observations
+            WHERE sid_hash=$sid AND observed_utc < $cutoff;
+            DELETE FROM learning_observations
+            WHERE sid_hash=$sid AND id NOT IN (
+                SELECT id FROM learning_observations WHERE sid_hash=$sid ORDER BY id DESC LIMIT $maximumRows);
+            """;
+        command.Parameters.AddWithValue("$sid", sidHash);
+        command.Parameters.AddWithValue("$cutoff", nowUtc.AddHours(-LearningObservationRetentionHours).ToString("O"));
+        command.Parameters.AddWithValue("$maximumRows", MaximumLearningObservationRows);
+        command.ExecuteNonQuery();
+    }
+
+    private void PruneContextActivity(SqliteConnection connection, SqliteTransaction? transaction, string sidHash,
+        string profileId, DateTimeOffset nowUtc)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            DELETE FROM context_activity
+            WHERE sid_hash=$sid AND profile_id=$profile AND observed_utc < $cutoff;
+            DELETE FROM context_activity
+            WHERE sid_hash=$sid AND profile_id=$profile AND id NOT IN (
+                SELECT id FROM context_activity WHERE sid_hash=$sid AND profile_id=$profile
+                ORDER BY id DESC LIMIT $maximumRows);
+            """;
+        command.Parameters.AddWithValue("$sid", sidHash);
+        command.Parameters.AddWithValue("$profile", profileId);
+        command.Parameters.AddWithValue("$cutoff", nowUtc.AddDays(-_contextRetentionDays).ToString("O"));
+        command.Parameters.AddWithValue("$maximumRows", MaximumContextActivityRowsPerProfile);
+        command.ExecuteNonQuery();
+    }
+
     private static void ValidateProfileId(string profileId)
     {
         if (profileId.Length is < 8 or > 16 || !profileId.StartsWith("PROFIL_", StringComparison.Ordinal)
@@ -237,7 +316,7 @@ public sealed class SqliteLearningProfileRepository : IAtomicLearningRepository,
         var connection = new SqliteConnection(_connectionString);
         connection.Open();
         using var command = connection.CreateCommand();
-        command.CommandText = "PRAGMA busy_timeout=5000;";
+        command.CommandText = "PRAGMA busy_timeout=5000; PRAGMA secure_delete=ON;";
         command.ExecuteNonQuery();
         return connection;
     }

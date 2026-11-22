@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationIcon>..\Assets\SentinelCore.ico</ApplicationIcon>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <Resource Include="..\Assets\SentinelCore.ico" Link="Assets\SentinelCore.ico" />
+    <ProjectReference Include="..\..\Demon 1\Mode_Apprentissage\src\SentinelCore.Demon1.Learning.Controller\SentinelCore.Demon1.Learning.Controller.csproj" />
+    <ProjectReference Include="..\..\Demon 3\DEMON 3\Demon3-Starter\src\SentinelCore.Demon3.Core\SentinelCore.Demon3.Core.csproj" />
+    <ProjectReference Include="..\..\Demon 2\src\SentinelCore.Demon2.Core\SentinelCore.Demon2.Core.csproj" />
+  </ItemGroup>
+</Project>

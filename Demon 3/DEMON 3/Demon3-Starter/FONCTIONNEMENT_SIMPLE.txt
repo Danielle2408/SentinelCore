@@ -1,0 +1,59 @@
+FONCTIONNEMENT SIMPLE — DÉMON 3
+
+À quoi sert-il ?
+Demon 3 est le poste de décision de SentinelCore. Demon 1 lui apporte des indices sur la personne qui utilise le PC. Demon 2 lui apporte des indices sur les programmes, fichiers et activités techniques. Demon 3 rassemble les indices, décide du niveau de vigilance et garde un rapport.
+
+Comment démarrer ?
+Dans le dossier Demon3-Starter, lancer `.\Lancer-Demon3.ps1` pour afficher un menu. Choisir le démarrage en simulation pour le fonctionnement normal. Pour démarrer directement dans PowerShell :
+dotnet run --project .\src\SentinelCore.Demon3.Cli\SentinelCore.Demon3.Cli.csproj -- --serve
+Il faut lancer Demon 3 avant les démons 1 et 2. Il attend leurs messages sur le canal local Windows SentinelCore.Guard. Ctrl+C arrête le service proprement.
+
+Exemple 1 : comportement habituel
+Demon 2 signale une activité faible. Demon 1 indique que le comportement ressemble à celui appris pour le propriétaire. Demon 3 garde une vigilance basse et enregistre les indices et sa décision.
+
+Exemple 2 : écart de comportement
+Demon 1 signale un écart de comportement supérieur au seuil prévu. Demon 3 augmente la vigilance et peut demander une vérification visuelle quand l’affaire devient élevée. Un écart humain seul ne suffit pas à lancer une mesure technique destructive.
+
+Exemple 3 : menace technique et propriétaire reconnu
+Demon 2 signale une menace critique. Demon 1 vérifie l’identité visuelle et confirme le propriétaire avec présence réelle. Cette confirmation diminue le niveau de risque d’un cran : une alerte critique devient élevée. L’alerte technique et ses preuves restent dans le rapport, mais le fait que le propriétaire soit aux commandes réduit le risque associé à la situation. L’analyse rapide de Defender n’est proposée que si le niveau final est élevé et que l’option de lancement correspondante est activée.
+
+Exemple 4 : propriétaire non reconnu
+Si Demon 1 renvoie NO_MATCH, Demon 3 augmente la vigilance. Si la caméra ne donne pas un résultat fiable, Demon 3 note que l’identité reste inconnue; il ne prétend pas avoir reconnu la personne.
+
+Exemple 5 : informations qui se contredisent
+Si Demon 1 et Demon 2 donnent des indices difficiles à concilier, Demon 3 demande un avis à Ollama installé localement. Ollama reçoit seulement des catégories, des mesures agrégées et des codes courts. Il ne reçoit pas les frappes clavier, mots de passe, images, chemins personnels ou commandes. Il peut demander une précision à D1 ou D2; après leur réponse, il réévalue le cas, au maximum trois fois. Son avis aide à fixer l’évaluation et la mesure proposée. D3 vérifie ensuite que la mesure existe dans son catalogue et que toutes ses conditions de sécurité sont remplies.
+
+Rapports et comparaison
+Les rapports sont stockés dans une base SQLite locale et aussi copiés sous forme de fichier JSON et de texte français dans :
+%LOCALAPPDATA%\SentinelCore\Demon3\reports
+Pour afficher un résumé des derniers rapports :
+dotnet run --project .\src\SentinelCore.Demon3.Cli\SentinelCore.Demon3.Cli.csproj -- --reports
+Demon 3 compare la décision avec la précédente pour la même affaire ou des indices de même forme. Il note les différences pour qu’une personne les examine. Il ne change pas seul ses règles et ne s’entraîne pas encore automatiquement.
+
+Simulation depuis la base D2
+Pour vérifier le passage des rapports déjà créés par D2 aux décisions D3 :
+dotnet run --project .\src\SentinelCore.Demon3.Cli\SentinelCore.Demon3.Cli.csproj -- --replay-d2 "..\..\..\Demon 2\Demon2_Training.sqlite"
+Le pourcentage affiché vérifie seulement les correspondances entre les étiquettes de la base et les règles D3. Il ne mesure pas si D2 a bien détecté une attaque.
+
+Pour envoyer les 50 constats fictifs au vrai canal local du D3 : démarre d’abord D3 avec --serve dans une fenêtre PowerShell, puis dans une deuxième fenêtre lance :
+dotnet run --project .\src\SentinelCore.Demon3.Cli\SentinelCore.Demon3.Cli.csproj -- --publish-d2-fixtures "..\..\..\Demon 2\Demon2_Training.sqlite"
+Les cas sont synthétiques; aucun programme suspect n’est lancé.
+
+Ce qui est actif dans le code à ce stade
+- Réception locale des enveloppes, vérification des expéditeurs, types, dates et taille.
+- Association des indices D1 et D2 qui ont la même référence d’affaire.
+- Règles de décision qui préservent l’alerte technique et tiennent compte de la confirmation visuelle du propriétaire.
+- Demande de vérification visuelle à D1 pour une affaire élevée, si D1 est connecté.
+- Production des rapports et comparaison avec les décisions précédentes.
+- Récupération de l’image de vérification auprès de D1, copie chiffrée liée au rapport et empreinte de contrôle; l’image reste dans le rapport même si la copie d’origine de D1 est effacée.
+- Appel non bloquant à Ollama sur les cas ambigus; jusqu’à trois analyses après réception de nouveaux renseignements. Le modèle par défaut est gemma3:1b, et le rapport enregistre son nom, son résultat et sa durée. Sur ce PC, les essais ont répondu entre 16,7 et 32,1 secondes. Une règle refuse maintenant le conseil si l’IA traite un contrôle visuel non demandé comme un contrôle échoué; il faut encore mesurer la qualité sur de nombreux cas avant de lui faire confiance sans supervision.
+- Catalogue fermé : par défaut il simule les mesures; avec une option volontaire au lancement il peut demander une analyse rapide Defender pour un finding D2 élevé.
+- Les événements marqués comme simulations ne déclenchent ni la caméra D1 ni une mesure Windows réelle, même si l’option Defender est activée.
+
+Ce qui n’est pas encore terminé
+- Un essai d’intégration a relié les clients de communication D1 et D2 au vrai serveur local D3, puis à Ollama gemma3:1b; il a produit un rapport. Les réponses D1 du test sont simulées par protocole : aucune caméra ne s’ouvre et aucune mesure Windows réelle ne s’exécute. Cela prouve le branchement, pas la qualité générale des décisions de l’IA. Le service Windows D2 et sa collecte Sysmon n’ont pas été démarrés pendant ces tests.
+- Les demandes de contexte D2 passent par D3 vers D1; seules des catégories de session autorisées sont renvoyées à D2. D2 peut aussi demander à D3 les détails filtrés d’un constat.
+- Par défaut, les mesures Windows sont simulées. Une option explicite permet une analyse rapide Defender après confirmation fraîche du mot de passe maître dans D1; la mise en quarantaine reste bloquée car elle n’est pas implémentée.
+- Les petits modèles peuvent mal interpréter une information manquante ou non demandée. Les textes de l’IA sont donc indiqués comme des reformulations à vérifier auprès des signaux D1/D2; le benchmark annoté doit encore confirmer la qualité des conclusions.
+- Si D1 transmet la preuve JPEG, le rapport en garde une copie chiffrée liée à sa référence. Le petit outil de rapport texte montre son emplacement chiffré; l’aperçu direct de l’image dans une fenêtre de rapport n’est pas encore créé.
+- Le canal Windows autorise le compte qui lance D3. Si D2 utilise un compte de service différent, il faut ajouter son SID au rôle D2 avec --allow-d2-client-sid. Un SID D2 supplémentaire ne peut pas se présenter comme D1 pour fabriquer une confirmation du propriétaire. Le pipe ne s’ouvre pas à tous les utilisateurs. Cette règle est testée sur un pipe local; le vrai service Windows D2 et son identité n’ont pas été démarrés ensemble ici.

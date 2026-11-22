@@ -32,6 +32,7 @@ La fenêtre permet :
 - de modifier la période de mesure (10–60 s) et l’arrêt après inactivité (30–900 s);
 - de configurer jusqu’à huit profils et de choisir le profil auquel rattacher une session d’apprentissage;
 - de voir un résumé des programmes souvent au premier plan, des heures observées et de leur utilisation médiane du CPU/de la mémoire;
+- de régler la conservation de l’historique des applications et ressources (1 à 90 jours, 30 jours par défaut);
 - de changer le mot de passe maître après vérification de l’ancien.
 
 La base est enregistrée dans `%LOCALAPPDATA%\SentinelCore\Demon1Learning\learning.db`. Les profils et mesures sont chiffrés par DPAPI par compte utilisateur Windows. Le mot de passe maître et les empreintes sont enregistrés dans `auth.bin`, également protégé DPAPI. Les préférences générales sont dans `settings.json`.
@@ -40,9 +41,11 @@ Dans la fenêtre « Voir la base », les dates, contextes, états, décisions et
 
 ## Données collectées
 
-Le collecteur Windows Raw Input agrège les événements par période : fréquence de frappe, durée d’appui, intervalle et pauses entre frappes, vitesse/accélération/curvature de la souris et intervalles de clic. Les codes de touches n’existent qu’en mémoire le temps de calculer une durée d’appui; aucun caractère ni texte n’est écrit dans le profil. Les mesures comportementales des profils 1 à 8 sont séparées par identifiant de contexte dans la base. Pendant une collecte, le collecteur observe aussi une fois par seconde le processus de premier plan, son CPU/sa mémoire et la mémoire utilisée par le système, puis enregistre une synthèse par période dans SQLite chiffrée par DPAPI. Les noms de fenêtre, commandes lancées et contenus ne sont pas collectés par D1.
+Le collecteur Windows Raw Input agrège les événements par période : fréquence de frappe, durée d’appui, intervalle et pauses entre frappes, vitesse/accélération/curvature de la souris et intervalles de clic. Les codes de touches n’existent qu’en mémoire le temps de calculer une durée d’appui; aucun caractère ni texte n’est écrit dans le profil. Les événements de frappe/souris sont réinitialisés à chaque période et leur historique SQLite est supprimé après 24 heures; seuls les résumés bornés du profil restent pour l’apprentissage.
 
-Le système exclut les événements quand la fenêtre SentinelCore est active, n’enregistre pas de mesure clavier/souris si l’activité est insuffisante et interrompt la collecte après le délai d’inactivité configuré. Les horaires, applications de premier plan et ressources sont collectés par profil. La validation comportementale compare clavier/souris; l’identité visuelle locale (YuNet/SFace/MiniFASNetV2), les rapports et les échanges avec D3 sont présents. Le contrôleur doit rester ouvert pour maintenir son client local connecté au pipe de D3.
+Pendant une collecte, le collecteur appelle les API Windows une fois par seconde pour connaître le nom simple du processus au premier plan, l’heure et le jour, la durée observée, son utilisation CPU/mémoire et la mémoire utilisée par le système. Il agrège ces données par période et profil, les protège par DPAPI, puis les conserve selon le réglage de 1 à 90 jours (30 jours par défaut), avec un plafond de 20 000 périodes par profil. Les noms de fenêtre, commandes lancées, chemins de fichiers et contenus ne sont pas collectés par D1. Les profils d’apprentissage 1 à 8 restent séparés.
+
+Le système écarte les événements bruts lorsque le collecteur est au premier plan, n’enregistre pas de mesure clavier/souris si l’activité est insuffisante et interrompt la collecte après le délai d’inactivité configuré. Les horaires, applications de premier plan et ressources sont collectés par profil. La validation comportementale compare clavier/souris; l’identité visuelle locale (YuNet/SFace/MiniFASNetV2), les rapports et les échanges avec D3 sont présents. Le contrôleur doit rester ouvert pour maintenir son client local connecté au pipe de D3. Cette collecte est réelle mais démarrée manuellement : ce n’est pas encore un service Windows démarré avant l’ouverture de session. Raw Input décrit le périphérique d’entrée; un périphérique matériel émulant une personne peut donc imiter un clavier ou une souris.
 
 ## Structure
 

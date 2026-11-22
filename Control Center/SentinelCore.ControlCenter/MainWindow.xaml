@@ -1,0 +1,194 @@
+<Window x:Class="SentinelCore.ControlCenter.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:SentinelCore.ControlCenter"
+        xmlns:wfi="clr-namespace:System.Windows.Forms.Integration;assembly=WindowsFormsIntegration"
+        Title="SentinelCore — Centre de contrôle" Width="1200" Height="800"
+        MinWidth="400" MinHeight="300" WindowStartupLocation="CenterScreen"
+        ResizeMode="CanResizeWithGrip" UseLayoutRounding="True" SnapsToDevicePixels="True"
+        Icon="pack://application:,,,/Assets/SentinelCore.ico"
+        Background="{StaticResource CanvasBrush}" Foreground="{StaticResource TextBrush}">
+  <Window.Resources>
+    <Style TargetType="DataGrid">
+      <Setter Property="Background" Value="{StaticResource PanelBrush}" />
+      <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="RowBackground" Value="{StaticResource PanelBrush}" />
+      <Setter Property="AlternatingRowBackground" Value="{StaticResource PanelRaisedBrush}" />
+      <Setter Property="HeadersVisibility" Value="Column" />
+      <Setter Property="GridLinesVisibility" Value="None" />
+      <Setter Property="CanUserAddRows" Value="False" />
+      <Setter Property="IsReadOnly" Value="True" />
+      <Setter Property="AutoGenerateColumns" Value="False" />
+      <Setter Property="RowHeight" Value="36" />
+    </Style>
+    <Style TargetType="DataGridColumnHeader">
+      <Setter Property="Background" Value="{StaticResource PanelRaisedBrush}" />
+      <Setter Property="Foreground" Value="{StaticResource MutedBrush}" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Padding" Value="12,8" />
+      <Setter Property="BorderThickness" Value="0" />
+    </Style>
+    <Style x:Key="SidebarNavButton" TargetType="Button">
+      <Setter Property="Foreground" Value="{StaticResource MutedBrush}" />
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+      <Setter Property="Padding" Value="12,11" />
+      <Setter Property="Margin" Value="0,0,0,5" />
+      <Setter Property="Cursor" Value="Hand" />
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="NavSurface" Background="{TemplateBinding Background}" CornerRadius="8" Padding="{TemplateBinding Padding}">
+              <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="Center" />
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="NavSurface" Property="Background" Value="#17283A" /></Trigger>
+              <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.5" /></Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+  </Window.Resources>
+  <Grid x:Name="ShellGrid">
+    <Grid.ColumnDefinitions><ColumnDefinition Width="248"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+
+    <Border x:Name="SidebarPanel" Grid.Column="0" Background="#0E1728" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,1,0">
+      <DockPanel x:Name="SidebarDockPanel" Margin="22,24,18,18">
+        <StackPanel DockPanel.Dock="Top">
+          <StackPanel x:Name="SidebarBranding" Orientation="Horizontal" Margin="0,0,0,32">
+            <Border x:Name="SidebarBrandIcon" Width="42" Height="42" CornerRadius="12" Background="#173D48" Margin="0,0,12,0">
+              <TextBlock Text="S" Foreground="{StaticResource AccentBrush}" FontSize="24" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center" />
+            </Border>
+            <StackPanel x:Name="SidebarBrandName" VerticalAlignment="Center"><TextBlock Text="SENTINELCORE" FontWeight="Bold" FontSize="15"/><TextBlock Text="LOCAL SECURITY CONSOLE" FontSize="9" Foreground="{StaticResource MutedBrush}" Margin="0,2,0,0"/></StackPanel>
+          </StackPanel>
+          <TextBlock x:Name="SidebarWorkspaceLabel" Text="ESPACE DE TRAVAIL" Foreground="{StaticResource MutedBrush}" FontWeight="SemiBold" FontSize="10" Margin="2,0,0,10"/>
+          <Button x:Name="NavOverview" ToolTip="Vue d’ensemble" Style="{StaticResource SidebarNavButton}" Background="#193543" Click="NavigateOverview_Click"><StackPanel Orientation="Horizontal"><TextBlock x:Name="NavOverviewIcon" Text="◈" Foreground="{StaticResource AccentBrush}" Margin="0,0,10,0"/><TextBlock x:Name="NavOverviewLabel" Text="Vue d’ensemble" FontWeight="SemiBold"/></StackPanel></Button>
+          <Button x:Name="NavD1" ToolTip="Apprentissage D1" Style="{StaticResource SidebarNavButton}" Click="NavigateD1_Click"><StackPanel Orientation="Horizontal"><TextBlock x:Name="NavD1Icon" Text="◉" Margin="0,0,10,0"/><TextBlock x:Name="NavD1Label" Text="Apprentissage D1"/></StackPanel></Button>
+          <Button x:Name="NavActivities" ToolTip="Activités D2 / D3" Style="{StaticResource SidebarNavButton}" Click="NavigateActivities_Click"><StackPanel Orientation="Horizontal"><TextBlock x:Name="NavActivitiesIcon" Text="▤" Margin="0,0,10,0"/><TextBlock x:Name="NavActivitiesLabel" Text="Activités D2 / D3"/></StackPanel></Button>
+          <Button x:Name="NavAi" ToolTip="IA locale" Style="{StaticResource SidebarNavButton}" Click="NavigateAi_Click"><StackPanel Orientation="Horizontal"><TextBlock x:Name="NavAiIcon" Text="✦" Margin="0,0,10,0"/><TextBlock x:Name="NavAiLabel" Text="IA locale"/></StackPanel></Button>
+          <Button x:Name="NavConfiguration" ToolTip="Configuration" Style="{StaticResource SidebarNavButton}" Margin="0" Click="NavigateConfiguration_Click"><StackPanel Orientation="Horizontal"><TextBlock x:Name="NavConfigurationIcon" Text="⚙" Margin="0,0,10,0"/><TextBlock x:Name="NavConfigurationLabel" Text="Configuration"/></StackPanel></Button>
+        </StackPanel>
+        <StackPanel x:Name="SidebarFooter" DockPanel.Dock="Bottom">
+          <Border x:Name="SidebarProtectionPanel" Background="#111A2D" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="12" Padding="13" Margin="0,0,0,14">
+            <StackPanel><TextBlock Text="MODE DE PROTECTION" FontSize="9" Foreground="{StaticResource MutedBrush}" FontWeight="Bold"/><TextBlock Text="Observation locale" FontWeight="SemiBold" Margin="0,6,0,2"/><TextBlock Text="Les réponses actives restent soumises aux règles et autorisations de D3." TextWrapping="Wrap" FontSize="10" Foreground="{StaticResource MutedBrush}"/></StackPanel>
+          </Border>
+          <TextBlock x:Name="SidebarBuildFooter" Text="SENTINELCORE • BUILD LOCAL" FontSize="9" Foreground="{StaticResource MutedBrush}"/>
+        </StackPanel>
+      </DockPanel>
+    </Border>
+
+    <Grid x:Name="MainContentGrid" Grid.Column="1">
+      <Grid.RowDefinitions><RowDefinition Height="76"/><RowDefinition Height="*"/><RowDefinition Height="190"/></Grid.RowDefinitions>
+      <Border Grid.Row="0" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,0,1" Background="#0D1423">
+        <Grid x:Name="HeaderGrid" Margin="30,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+          <StackPanel VerticalAlignment="Center"><TextBlock Text="CENTRE DE SÉCURITÉ" Foreground="{StaticResource MutedBrush}" FontSize="10" FontWeight="SemiBold"/><TextBlock x:Name="PageTitle" Text="Vue d’ensemble" FontSize="22" FontWeight="SemiBold" Margin="0,2,0,0"/></StackPanel>
+          <StackPanel x:Name="HeaderControls" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+            <Border x:Name="OverallStatusPill" Background="#2A2318" CornerRadius="20" Padding="11,7" Margin="0,0,14,0"><StackPanel Orientation="Horizontal"><Ellipse x:Name="OverallDot" Width="7" Height="7" Fill="{StaticResource AmberBrush}" Margin="0,0,8,0"/><TextBlock x:Name="OverallStatus" Text="PRÊT À DÉMARRER" Foreground="{StaticResource AmberBrush}" FontSize="10" FontWeight="Bold"/></StackPanel></Border>
+            <Button x:Name="HeaderStartButton" Content="Démarrer la protection" ToolTip="Démarrer la protection" Style="{StaticResource PrimaryButton}" Click="StartStack_Click" Margin="0,0,8,0"/>
+            <Button x:Name="HeaderStopButton" Content="Arrêter" ToolTip="Arrêter la protection" Style="{StaticResource SecondaryButton}" Click="StopStack_Click"/>
+          </StackPanel>
+        </Grid>
+      </Border>
+
+      <ScrollViewer x:Name="OverviewPage" Grid.Row="1" VerticalScrollBarVisibility="Auto">
+        <StackPanel x:Name="OverviewContent" Margin="30,24,30,30">
+          <DockPanel Margin="0,0,0,16"><StackPanel DockPanel.Dock="Left"><TextBlock Text="ÉTAT DU SYSTÈME" Foreground="{StaticResource MutedBrush}" FontSize="10" FontWeight="Bold"/><TextBlock Text="Les composants actifs sur ce poste" FontSize="19" FontWeight="SemiBold" Margin="0,4,0,0"/></StackPanel><Button DockPanel.Dock="Right" Content="Construire les modules" Style="{StaticResource SecondaryButton}" Click="Build_Click"/></DockPanel>
+
+          <UniformGrid x:Name="MetricsGrid" Columns="4" Margin="0,0,0,18">
+            <Border Style="{StaticResource PanelBorder}" Margin="0,0,12,0"><StackPanel><TextBlock Text="DÉMONS ACTIFS" FontSize="9" Foreground="{StaticResource MutedBrush}" FontWeight="Bold"/><TextBlock x:Name="ActiveDaemonCount" Text="0 / 3" FontSize="27" FontWeight="SemiBold" Margin="0,7,0,2"/><TextBlock Text="Processus locaux supervisés" FontSize="10" Foreground="{StaticResource MutedBrush}"/></StackPanel></Border>
+            <Border Style="{StaticResource PanelBorder}" Margin="0,0,12,0"><StackPanel><TextBlock Text="DERNIER RISQUE" FontSize="9" Foreground="{StaticResource MutedBrush}" FontWeight="Bold"/><TextBlock x:Name="LatestRisk" Text="—" FontSize="27" FontWeight="SemiBold" Margin="0,7,0,2"/><TextBlock Text="Selon les rapports de D3" FontSize="10" Foreground="{StaticResource MutedBrush}"/></StackPanel></Border>
+            <Border Style="{StaticResource PanelBorder}" Margin="0,0,12,0"><StackPanel><TextBlock Text="RAPPORTS LOCAUX" FontSize="9" Foreground="{StaticResource MutedBrush}" FontWeight="Bold"/><TextBlock x:Name="ReportCount" Text="0" FontSize="27" FontWeight="SemiBold" Margin="0,7,0,2"/><TextBlock Text="Historique de décision D3" FontSize="10" Foreground="{StaticResource MutedBrush}"/></StackPanel></Border>
+            <Border Style="{StaticResource PanelBorder}"><StackPanel><TextBlock Text="CONSEILLER IA" FontSize="9" Foreground="{StaticResource MutedBrush}" FontWeight="Bold"/><TextBlock x:Name="AiSummary" Text="Gemma 3 · vérification…" FontSize="18" FontWeight="SemiBold" Margin="0,10,0,4"/><TextBlock x:Name="AiStatus" Text="Ollama local" FontSize="10" Foreground="{StaticResource MutedBrush}"/></StackPanel></Border>
+          </UniformGrid>
+
+          <UniformGrid x:Name="DaemonCardsGrid" Columns="3" Margin="0,0,0,18">
+            <Border Style="{StaticResource PanelBorder}" Margin="0,0,12,0">
+              <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                <DockPanel><Border Width="36" Height="36" CornerRadius="10" Background="#1C3549" DockPanel.Dock="Left" Margin="0,0,11,0"><TextBlock Text="◉" Foreground="{StaticResource BlueBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="18"/></Border><StackPanel VerticalAlignment="Center"><TextBlock Text="DÉMON 1" FontSize="9" Foreground="{StaticResource MutedBrush}" FontWeight="Bold"/><TextBlock Text="Comportement &amp; identité" FontSize="15" FontWeight="SemiBold"/></StackPanel></DockPanel>
+                <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,16,0,10"><Ellipse x:Name="D1Dot" Width="7" Height="7" Fill="{StaticResource AmberBrush}" VerticalAlignment="Center" Margin="0,0,7,0"/><TextBlock x:Name="D1Status" Text="Application fermée" FontSize="11" Foreground="{StaticResource AmberBrush}"/></StackPanel>
+                <TextBlock Grid.Row="2" Text="Apprentissage et vérification visuelle. L’application D1 demandera son authentification avant de lancer la collecte." Foreground="{StaticResource MutedBrush}" FontSize="11" TextWrapping="Wrap" LineHeight="17" Margin="0,0,0,16"/>
+                <StackPanel Grid.Row="3" Orientation="Horizontal"><Button x:Name="D1StartButton" Content="Ouvrir D1" Style="{StaticResource SecondaryButton}" HorizontalAlignment="Left" Click="StartD1_Click"/><Button Content="Arrêter" Style="{StaticResource SecondaryButton}" Margin="8,0,0,0" Click="StopD1_Click"/></StackPanel>
+              </Grid>
+            </Border>
+            <Border Style="{StaticResource PanelBorder}" Margin="0,0,12,0">
+              <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                <DockPanel><Border Width="36" Height="36" CornerRadius="10" Background="#382C20" DockPanel.Dock="Left" Margin="0,0,11,0"><TextBlock Text="⌁" Foreground="{StaticResource AmberBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="18"/></Border><StackPanel VerticalAlignment="Center"><TextBlock Text="DÉMON 2" FontSize="9" Foreground="{StaticResource MutedBrush}" FontWeight="Bold"/><TextBlock Text="Surveillance des menaces" FontSize="15" FontWeight="SemiBold"/></StackPanel></DockPanel>
+                <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,16,0,10"><Ellipse x:Name="D2Dot" Width="7" Height="7" Fill="{StaticResource MutedBrush}" VerticalAlignment="Center" Margin="0,0,7,0"/><TextBlock x:Name="D2Status" Text="Arrêté" FontSize="11" Foreground="{StaticResource MutedBrush}"/></StackPanel>
+                <TextBlock Grid.Row="2" Text="Observe les alertes natives Microsoft Defender et, si installé, les événements Sysmon pour relier processus, scripts, fichiers et réseau. La couverture des chaînes détaillées dépend de Sysmon." Foreground="{StaticResource MutedBrush}" FontSize="11" TextWrapping="Wrap" LineHeight="17" Margin="0,0,0,16"/>
+                <StackPanel Grid.Row="3" Orientation="Horizontal"><Button x:Name="D2StartButton" Content="Démarrer D2" Style="{StaticResource SecondaryButton}" HorizontalAlignment="Left" Click="StartD2_Click"/><Button Content="Arrêter" Style="{StaticResource SecondaryButton}" Margin="8,0,0,0" Click="StopD2_Click"/></StackPanel>
+              </Grid>
+            </Border>
+            <Border Style="{StaticResource PanelBorder}">
+              <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                <DockPanel><Border Width="36" Height="36" CornerRadius="10" Background="#173B36" DockPanel.Dock="Left" Margin="0,0,11,0"><TextBlock Text="⬡" Foreground="{StaticResource AccentBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="18"/></Border><StackPanel VerticalAlignment="Center"><TextBlock Text="DÉMON 3" FontSize="9" Foreground="{StaticResource MutedBrush}" FontWeight="Bold"/><TextBlock Text="Risque, IA &amp; réponse" FontSize="15" FontWeight="SemiBold"/></StackPanel></DockPanel>
+                <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,16,0,10"><Ellipse x:Name="D3Dot" Width="7" Height="7" Fill="{StaticResource MutedBrush}" VerticalAlignment="Center" Margin="0,0,7,0"/><TextBlock x:Name="D3Status" Text="Arrêté" FontSize="11" Foreground="{StaticResource MutedBrush}"/></StackPanel>
+                <TextBlock Grid.Row="2" Text="Héberge le pipe local, transmet à l’IA les faits D1/D2, applique son plan selon les autorisations configurées et archive les rapports." Foreground="{StaticResource MutedBrush}" FontSize="11" TextWrapping="Wrap" LineHeight="17" Margin="0,0,0,16"/>
+                <StackPanel Grid.Row="3" Orientation="Horizontal"><Button x:Name="D3StartButton" Content="Démarrer D3" Style="{StaticResource SecondaryButton}" HorizontalAlignment="Left" Click="StartD3_Click"/><Button Content="Arrêter" Style="{StaticResource SecondaryButton}" Margin="8,0,0,0" Click="StopD3_Click"/></StackPanel>
+              </Grid>
+            </Border>
+          </UniformGrid>
+
+          <Grid x:Name="ReportsAiGrid" Margin="0,0,0,18"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><Grid.ColumnDefinitions><ColumnDefinition Width="1.1*"/><ColumnDefinition Width="0.9*"/></Grid.ColumnDefinitions>
+            <Border x:Name="ReportsPanel" Grid.Row="0" Style="{StaticResource PanelBorder}" Margin="0,0,12,0">
+              <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                <DockPanel><StackPanel><TextBlock Text="RAPPORTS DE SÉCURITÉ" FontSize="10" Foreground="{StaticResource MutedBrush}" FontWeight="Bold"/><TextBlock Text="Décisions récentes de D3" FontSize="16" FontWeight="SemiBold" Margin="0,4,0,13"/></StackPanel><Button DockPanel.Dock="Right" Content="Actualiser" Style="{StaticResource SecondaryButton}" Padding="13,7" Click="RefreshReports_Click"/></DockPanel>
+                <DataGrid x:Name="ReportsGrid" Grid.Row="1" MaxHeight="220" AlternationCount="2">
+                  <DataGrid.Columns><DataGridTextColumn Header="HEURE" Binding="{Binding Time}" Width="135"/><DataGridTextColumn Header="RISQUE" Binding="{Binding Risk}" Width="100"/><DataGridTextColumn Header="DÉCISION" Binding="{Binding Decision}" Width="185"/><DataGridTextColumn Header="RÉSUMÉ" Binding="{Binding Summary}" Width="*"/></DataGrid.Columns>
+                </DataGrid>
+                <TextBlock x:Name="ReportHint" Grid.Row="2" Text="Les rapports seront affichés ici lorsque D3 aura reçu des signaux." FontSize="10" Foreground="{StaticResource MutedBrush}" Margin="0,10,0,0"/>
+              </Grid>
+            </Border>
+            <Border x:Name="AiPanel" Grid.Row="0" Grid.Column="1" Style="{StaticResource PanelBorder}">
+              <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                <StackPanel><TextBlock Text="IA LOCALE" FontSize="10" Foreground="{StaticResource MutedBrush}" FontWeight="Bold"/><TextBlock Text="Ollama · API locale" FontSize="16" FontWeight="SemiBold" Margin="0,4,0,4"/><TextBlock x:Name="ConfiguredModelText" Text="Modèle D3" FontSize="11" Foreground="{StaticResource AccentBrush}"/></StackPanel>
+                <DockPanel Grid.Row="1" Margin="0,10,0,0" LastChildFill="False"><TextBlock Text="Modèle local" FontSize="10" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center"/><ComboBox x:Name="AiModelSelector" Width="145" IsEditable="True" IsTextSearchEnabled="True" Margin="10,0,0,0" Padding="7,4" FontSize="11" SelectionChanged="AiModel_SelectionChanged" LostKeyboardFocus="AiModel_LostKeyboardFocus"/></DockPanel>
+                <Border Grid.Row="2" Background="#0C1321" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="9" Padding="12" Margin="0,12,0,13"><StackPanel><TextBlock x:Name="OllamaDetail" Text="Vérification en cours…" TextWrapping="Wrap" FontSize="11"/><TextBlock Text="L’IA principale analyse les faits, peut demander des précisions à D1/D2 et propose une action. D3 vérifie les autorisations et l’exécute." TextWrapping="Wrap" FontSize="10" Foreground="{StaticResource MutedBrush}" Margin="0,9,0,0"/></StackPanel></Border>
+                <WrapPanel x:Name="AiActionButtons" Grid.Row="3"><Button Content="Vérifier Ollama local" Style="{StaticResource SecondaryButton}" HorizontalAlignment="Left" Margin="0,0,8,6" Click="CheckOllama_Click"/><Button x:Name="TestOllamaButton" Content="Tester l’inférence" Style="{StaticResource SecondaryButton}" Margin="0,0,8,6" Click="TestOllama_Click"/></WrapPanel>
+              </Grid>
+            </Border>
+          </Grid>
+          <Border x:Name="ConfigurationPanel" Style="{StaticResource PanelBorder}"><Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><DockPanel><StackPanel DockPanel.Dock="Left"><TextBlock Text="CONFIGURATION DU WORKSPACE" FontSize="10" Foreground="{StaticResource MutedBrush}" FontWeight="Bold"/><TextBlock x:Name="WorkspacePath" Text="Recherche du dossier SentinelCore…" FontSize="12" Margin="0,5,0,0" TextWrapping="Wrap"/></StackPanel><Button DockPanel.Dock="Right" Content="Choisir le dossier" Style="{StaticResource SecondaryButton}" Click="ChooseWorkspace_Click"/></DockPanel><CheckBox x:Name="DefenderScanToggle" Grid.Row="1" Content="Autoriser l’analyse rapide Microsoft Defender après validation du propriétaire" Margin="0,14,0,0" Foreground="{StaticResource TextBrush}" Checked="DefenderScanToggle_Changed" Unchecked="DefenderScanToggle_Changed"/><TextBlock Grid.Row="2" Text="Cette option s’applique au prochain démarrage de D3. Chaque analyse exige le mot de passe maître; le confinement/quarantaine reste indisponible. Sysmon et les services Windows ne sont pas configurés par le Centre." Foreground="{StaticResource MutedBrush}" FontSize="10" Margin="0,8,0,10" TextWrapping="Wrap"/><CheckBox x:Name="AutoStartToggle" Grid.Row="3" Content="Démarrer SentinelCore à l’ouverture de ma session Windows (authentification requise)" Foreground="{StaticResource TextBrush}" Checked="AutoStartToggle_Changed" Unchecked="AutoStartToggle_Changed"/><CheckBox x:Name="KeepRunningToggle" Grid.Row="4" Content="Maintenir D1, D2 et D3 en arrière-plan après fermeture du Centre" Margin="0,10,0,0" Foreground="{StaticResource TextBrush}" Checked="KeepRunningToggle_Changed" Unchecked="KeepRunningToggle_Changed"/><TextBlock Grid.Row="5" Text="Au démarrage de session, le Centre demande d’abord une authentification; D2 et D3 démarrent ensuite automatiquement. L’apprentissage clavier/souris de D1 reste soumis à son autorisation et à un démarrage manuel. Si cette option est activée, la fermeture du Centre lance un petit hôte D1 caché qui reprend les demandes de contexte, d’identité visuelle et d’autorisation de D3; il ne démarre pas la collecte clavier/souris. Les démons tournent dans la session Windows actuelle, mais aucun service système ne les relance après un plantage ou un redémarrage." Foreground="{StaticResource MutedBrush}" FontSize="10" Margin="0,8,0,0" TextWrapping="Wrap"/><TextBlock Grid.Row="6" Text="Le démarrage automatique s’applique à la session Windows actuelle et se retire en décochant l’option." Foreground="{StaticResource MutedBrush}" FontSize="10" Margin="0,4,0,0" TextWrapping="Wrap"/></Grid></Border>
+          <Border x:Name="TelegramPanel" Style="{StaticResource PanelBorder}" Margin="0,14,0,0">
+            <StackPanel>
+              <TextBlock Text="ALERTES TELEGRAM" FontSize="10" Foreground="{StaticResource MutedBrush}" FontWeight="Bold" />
+              <TextBlock Text="D3 peut envoyer un PDF quand le risque est élevé/critique ou reste ambigu après Ollama. Le Centre envoie aussi un avertissement après deux échecs d’authentification dans la même ouverture. Le jeton du bot est chiffré pour ce compte Windows." FontSize="11" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="0,5,0,10" />
+              <CheckBox x:Name="TelegramAlertsToggle" Content="Activer les alertes et rapports PDF Telegram" Foreground="{StaticResource TextBrush}" />
+              <TextBlock Text="Identifiant de discussion (chat ID)" FontSize="10" Foreground="{StaticResource MutedBrush}" Margin="0,10,0,4" />
+              <TextBox x:Name="TelegramChatIdBox" Padding="9,7" FontSize="12" MaxLength="128" />
+              <TextBlock Text="Jeton du bot Telegram (BotFather)" FontSize="10" Foreground="{StaticResource MutedBrush}" Margin="0,9,0,4" />
+              <PasswordBox x:Name="TelegramBotTokenBox" Padding="9,7" MaxLength="256" />
+              <WrapPanel Margin="0,10,0,0">
+                <Button Content="Enregistrer" Style="{StaticResource SecondaryButton}" Margin="0,0,8,6" Click="SaveTelegram_Click" />
+                <Button Content="Enregistrer et envoyer un test" Style="{StaticResource PrimaryButton}" Margin="0,0,8,6" Click="TestTelegram_Click" />
+                <Button Content="Effacer la configuration" Style="{StaticResource SecondaryButton}" Margin="0,0,8,6" Click="ForgetTelegram_Click" />
+              </WrapPanel>
+              <TextBlock x:Name="TelegramAlertStatus" Text="Non configuré. Le Bot API exige un jeton de bot et un chat ID." FontSize="10" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="0,3,0,0" />
+              <TextBlock Text="Créer une discussion Sentinel alerte ne peut pas être fait par le bot lui-même : crée la discussion dans Telegram, ajoute le bot et envoie-lui /start avant le test. Les photos jointes aux rapports sont transmises dans le PDF si une identité visuelle a été vérifiée." FontSize="10" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="0,8,0,0" />
+            </StackPanel>
+          </Border>
+        </StackPanel>
+      </ScrollViewer>
+
+      <local:DaemonActivityPage x:Name="ActivityPage" Grid.Row="1" Visibility="Collapsed" />
+
+      <Grid x:Name="D1Page" Grid.Row="1" Visibility="Collapsed">
+        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+        <DockPanel x:Name="D1PageHeader" Grid.Row="0" Margin="30,20,30,14">
+          <StackPanel DockPanel.Dock="Left">
+            <TextBlock Text="DÉMON 1 · APPRENTISSAGE &amp; IDENTITÉ" FontSize="10" Foreground="{StaticResource MutedBrush}" FontWeight="Bold" />
+            <TextBlock Text="Comportement du propriétaire" FontSize="19" FontWeight="SemiBold" Margin="0,4,0,0" />
+          </StackPanel>
+          <TextBlock DockPanel.Dock="Right" Text="La collecte démarre uniquement depuis le contrôle D1." FontSize="10" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" TextWrapping="Wrap" />
+        </DockPanel>
+        <wfi:WindowsFormsHost x:Name="D1Host" Grid.Row="1" Margin="30,0,30,24" />
+      </Grid>
+
+      <Border Grid.Row="2" Background="#0D1423" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,1,0,0">
+        <Grid x:Name="LogPanelGrid" Margin="30,14"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions><DockPanel Margin="0,0,0,10"><StackPanel DockPanel.Dock="Left" Orientation="Horizontal"><TextBlock Text="JOURNAL DU CENTRE" FontSize="10" FontWeight="Bold" Foreground="{StaticResource MutedBrush}"/><TextBlock x:Name="LogCount" Text="  •  0 événements" FontSize="10" Foreground="{StaticResource MutedBrush}"/></StackPanel><Button DockPanel.Dock="Right" Content="Effacer l’affichage" Style="{StaticResource SecondaryButton}" Padding="10,5" Click="ClearLog_Click"/></DockPanel><ListBox x:Name="LogList" Grid.Row="1" Background="Transparent" BorderThickness="0" Foreground="{StaticResource MutedBrush}" FontFamily="Consolas" FontSize="10" ScrollViewer.HorizontalScrollBarVisibility="Disabled"/></Grid>
+      </Border>
+    </Grid>
+  </Grid>
+</Window>

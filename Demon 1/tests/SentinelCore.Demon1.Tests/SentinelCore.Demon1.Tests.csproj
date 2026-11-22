@@ -2,11 +2,14 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\SentinelCore.Demon1.Core\SentinelCore.Demon1.Core.csproj" />
+    <ProjectReference Include="..\..\Mode_Validation\src\SentinelCore.Demon1.VisualVerification\SentinelCore.Demon1.VisualVerification.csproj" />
+    <ProjectReference Include="..\..\Mode_Apprentissage\src\SentinelCore.Demon1.Learning\SentinelCore.Demon1.Learning.csproj" />
+    <ProjectReference Include="..\..\Mode_Apprentissage\src\SentinelCore.Demon1.Learning.Controller\SentinelCore.Demon1.Learning.Controller.csproj" />
   </ItemGroup>
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
   </PropertyGroup>

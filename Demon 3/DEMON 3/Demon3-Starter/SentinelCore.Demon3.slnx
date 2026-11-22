@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="src/SentinelCore.Demon3.Core/SentinelCore.Demon3.Core.csproj" />
+  <Project Path="src/SentinelCore.Demon3.Cli/SentinelCore.Demon3.Cli.csproj" />
+  <Project Path="tests/SentinelCore.Demon3.Tests/SentinelCore.Demon3.Tests.csproj" />
+</Solution>

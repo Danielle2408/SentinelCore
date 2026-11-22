@@ -1,9 +1,9 @@
 using System.Text.Json;
 using SentinelCore.Demon1.VisualVerification;
 
-if (args.Length == 0 || args[0] is not ("--camera-d3" or "--camera-request" or "--camera-failure"))
+if (args.Length == 0 || args[0] is not ("--camera-d3" or "--camera-request" or "--camera-failure" or "--camera-deadline"))
 {
-    Console.WriteLine("Usage: SentinelCore.Demon1.VisualSimulation.exe --camera-d3 | --camera-request | --camera-failure");
+    Console.WriteLine("Usage: SentinelCore.Demon1.VisualSimulation.exe --camera-d3 | --camera-request | --camera-failure | --camera-deadline");
     return 2;
 }
 
@@ -15,13 +15,19 @@ Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
 var correlationId = Guid.NewGuid().ToString("D");
 var started = DateTimeOffset.UtcNow;
 var mode = args[0];
-string source = mode == "--camera-failure" ? "caméra invalide (index 8)" : "Integrated Camera (5 secondes)";
+string source = mode switch
+{
+    "--camera-failure" => "caméra invalide (index 8)",
+    "--camera-deadline" => "webcam réelle avec échéance D3 de 350 ms",
+    _ => "Integrated Camera (5 secondes)"
+};
 VisualIdentityResponse? response = null;
 string? enrollmentStatus = null;
 string? enrollmentReason = null;
 string? enrollmentDiagnostics = null;
 string? verificationDiagnostics = null;
 string? error = null;
+var temporaryDataDeleted = true;
 
 try
 {
@@ -33,7 +39,8 @@ try
         CameraIndex: mode == "--camera-failure" ? 8 : 0,
         CaptureSeconds: 5,
         MaximumWaitSeconds: 60,
-        Enabled: true);
+        Enabled: true,
+        AlternativeLivenessModelPath: Path.Combine(models, "Facenox-MiniFASNetV2-SE.onnx"));
     using var verifier = new VisualVerificationService(options);
     if (mode == "--camera-d3")
     {
@@ -50,7 +57,8 @@ try
     else
     {
         var now = DateTimeOffset.UtcNow;
-        var request = new VisualIdentityRequest(correlationId, "SUSPICION", now, now.AddSeconds(60), true);
+        var request = new VisualIdentityRequest(correlationId, "SUSPICION", now,
+            now.AddMilliseconds(mode == "--camera-deadline" ? 350 : 60_000), true);
         response = await new Demon1VisualRequestHandler(verifier, () => true).HandleAsync(request);
         verificationDiagnostics = verifier.LastCaptureDiagnostics;
     }
@@ -59,7 +67,11 @@ catch (Exception ex) { error = ex.GetType().Name + ": " + ex.Message; }
 finally
 {
     try { if (Directory.Exists(testData)) Directory.Delete(testData, recursive: true); }
-    catch (Exception ex) { error ??= "Nettoyage du profil de test impossible : " + ex.Message; }
+    catch (Exception ex)
+    {
+        temporaryDataDeleted = false;
+        error ??= "Nettoyage du profil de test impossible : " + ex.Message;
+    }
 }
 
 var record = new
@@ -74,7 +86,7 @@ var record = new
     d3Response = response,
     verificationDiagnostics,
     error,
-    temporaryTemplateAndEvidenceDeleted = true
+    temporaryTemplateAndEvidenceDeleted = temporaryDataDeleted
 };
 var json = JsonSerializer.Serialize(record, new JsonSerializerOptions { WriteIndented = true });
 File.AppendAllText(reportPath, json + Environment.NewLine);

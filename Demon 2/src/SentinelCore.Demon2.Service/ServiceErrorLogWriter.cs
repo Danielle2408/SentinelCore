@@ -33,7 +33,7 @@ internal sealed class ServiceErrorLogWriter : TextWriter
         {
             var timestamp = DateTimeOffset.UtcNow;
             var safeValue = Sanitize(value);
-            _console.WriteLine(safeValue);
+            TryWriteConsole(writer => writer.WriteLine(safeValue));
             EnsureDailyFile(timestamp);
             if (_fileAtLimit) { WarnLimitOnce(); return; }
             var line = $"{timestamp:O} {safeValue}";
@@ -56,7 +56,7 @@ internal sealed class ServiceErrorLogWriter : TextWriter
         {
             var timestamp = DateTimeOffset.UtcNow;
             var safeValue = Sanitize(value);
-            _console.Write(safeValue);
+            TryWriteConsole(writer => writer.Write(safeValue));
             EnsureDailyFile(timestamp);
             if (_fileAtLimit) { WarnLimitOnce(); return; }
             var bytes = Encoding.UTF8.GetByteCount(safeValue);
@@ -76,7 +76,7 @@ internal sealed class ServiceErrorLogWriter : TextWriter
     {
         lock (_gate)
         {
-            _console.Write(value);
+            TryWriteConsole(writer => writer.Write(value));
             EnsureDailyFile(DateTimeOffset.UtcNow);
             if (!_fileAtLimit)
             {
@@ -100,7 +100,7 @@ internal sealed class ServiceErrorLogWriter : TextWriter
     {
         lock (_gate)
         {
-            _console.Flush();
+            TryWriteConsole(writer => writer.Flush());
             EnsureDailyFile(DateTimeOffset.UtcNow);
             if (!_fileAtLimit)
             {
@@ -140,7 +140,14 @@ internal sealed class ServiceErrorLogWriter : TextWriter
     {
         if (_limitWarningWritten) return;
         _limitWarningWritten = true;
-        _console.WriteLine($"{DateTimeOffset.UtcNow:O} Threat Monitor daily log reached its 10 MiB limit; persistent logging is paused until the next UTC day.");
+        TryWriteConsole(writer => writer.WriteLine($"{DateTimeOffset.UtcNow:O} Threat Monitor daily log reached its 10 MiB limit; persistent logging is paused until the next UTC day."));
+    }
+
+    private void TryWriteConsole(Action<TextWriter> write)
+    {
+        try { write(_console); }
+        catch (IOException) { }
+        catch (ObjectDisposedException) { }
     }
 
     private static string Sanitize(string? value)

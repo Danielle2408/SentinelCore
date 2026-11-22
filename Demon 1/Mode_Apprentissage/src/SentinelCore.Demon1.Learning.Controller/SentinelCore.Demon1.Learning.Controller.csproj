@@ -15,4 +15,7 @@
     <ProjectReference Include="..\..\..\Mode_Validation\src\SentinelCore.Demon1.VisualVerification\SentinelCore.Demon1.VisualVerification.csproj" />
     <ProjectReference Include="..\..\..\Mode_Validation\src\SentinelCore.Demon1.Validation\SentinelCore.Demon1.Validation.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="SentinelCore.Demon1.Tests" />
+  </ItemGroup>
 </Project>

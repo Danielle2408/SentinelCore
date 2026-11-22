@@ -1,0 +1,269 @@
+DEMON 3 — 50 SIMULATIONS
+Toutes les actions sont simulées; aucune commande système ne sera exécutée.
+Ollama est facultatif et ne peut pas autoriser une action.
+
+CAS 01 — Contexte normal
+Situation : Routine développement nocturne. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : allow_and_log
+Appel IA : non
+
+CAS 02 — Contexte normal
+Situation : Mise à jour signée. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : allow_and_log
+Appel IA : non
+
+CAS 03 — Contexte normal
+Situation : Rapport faible incomplet. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : allow_and_log
+Appel IA : non
+
+CAS 04 — Contexte normal
+Situation : Compte invité autorisé. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : allow_and_log
+Appel IA : non
+
+CAS 05 — Contexte normal
+Situation : Profil récent, D2 bénin. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : allow_and_log
+Appel IA : non
+
+CAS 06 — Contexte normal
+Situation : Compilation IDE intense. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : allow_and_log
+Appel IA : non
+
+CAS 07 — Contexte normal
+Situation : Rapport dupliqué. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : allow_and_log
+Appel IA : non
+
+CAS 08 — Contexte normal
+Situation : Événement historique expiré. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : allow_and_log
+Appel IA : non
+
+CAS 09 — Contexte normal
+Situation : Horaire inhabituel seul. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : allow_and_log
+Appel IA : non
+
+CAS 10 — Contexte normal
+Situation : Téléchargement sans exécution. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : allow_and_log
+Appel IA : non
+
+CAS 11 — Menace forte
+Situation : Chaîne téléchargement script domaine rare. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : containment_review
+Appel IA : non
+
+CAS 12 — Menace forte
+Situation : Rafale modifications sandbox. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : containment_review
+Appel IA : non
+
+CAS 13 — Menace forte
+Situation : Persistance après exécution inconnue. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : containment_review
+Appel IA : non
+
+CAS 14 — Menace forte
+Situation : Détection Defender active. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : containment_review
+Appel IA : non
+
+CAS 15 — Menace forte
+Situation : Tentative neutralisation sécurité. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : containment_review
+Appel IA : non
+
+CAS 16 — Menace forte
+Situation : Lecture fichiers puis réseau sortant. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : containment_review
+Appel IA : non
+
+CAS 17 — Menace forte
+Situation : Téléchargement puis lancement. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : containment_review
+Appel IA : non
+
+CAS 18 — Menace forte
+Situation : Règle YARA approuvée correspond. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : containment_review
+Appel IA : non
+
+CAS 19 — Menace forte
+Situation : Règles indépendantes corroborées. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : containment_review
+Appel IA : non
+
+CAS 20 — Menace forte
+Situation : Règle critique déterministe sans IA. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : containment_review
+Appel IA : non
+
+CAS 21 — Ambiguïté
+Situation : D1 écart, D2 chaîne dev légitime. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : request_context
+Appel IA : oui, avis borné
+
+CAS 22 — Ambiguïté
+Situation : Domaine inconnu seul, signature valide. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : request_context
+Appel IA : oui, avis borné
+
+CAS 23 — Ambiguïté
+Situation : Signaux D1 contradictoires. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : request_context
+Appel IA : oui, avis borné
+
+CAS 24 — Ambiguïté
+Situation : Rapport D2 sans preuves. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : request_context
+Appel IA : oui, avis borné
+
+CAS 25 — Ambiguïté
+Situation : Source télémétrie inconnue. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : request_context
+Appel IA : oui, avis borné
+
+CAS 26 — Ambiguïté
+Situation : Désaccord de session. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : request_context
+Appel IA : oui, avis borné
+
+CAS 27 — Ambiguïté
+Situation : Ollama suggère action hors liste. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : request_context
+Appel IA : non
+
+CAS 28 — Ambiguïté
+Situation : Réponse Ollama malformée. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : request_context
+Appel IA : non
+
+CAS 29 — Ambiguïté
+Situation : Policy exige validation propriétaire. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : request_context
+Appel IA : oui, avis borné
+
+CAS 30 — Ambiguïté
+Situation : Profil normal mais exfiltration D2. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : request_context
+Appel IA : oui, avis borné
+
+CAS 31 — Autorisation
+Situation : Action sans policyId. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : policy_check
+Appel IA : non
+
+CAS 32 — Autorisation
+Situation : Quarantaine autorisée en bac test. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : policy_check
+Appel IA : non
+
+CAS 33 — Autorisation
+Situation : Action expirée. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : policy_check
+Appel IA : non
+
+CAS 34 — Autorisation
+Situation : Clé idempotence répétée. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : policy_check
+Appel IA : non
+
+CAS 35 — Autorisation
+Situation : Propriétaire refuse confirmation. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : policy_check
+Appel IA : non
+
+CAS 36 — Autorisation
+Situation : Invité demande action propriétaire. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : policy_check
+Appel IA : non
+
+CAS 37 — Autorisation
+Situation : Policy inconnue. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : policy_check
+Appel IA : non
+
+CAS 38 — Autorisation
+Situation : Processus système ciblé. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : policy_check
+Appel IA : non
+
+CAS 39 — Autorisation
+Situation : Scan Defender borné autorisé. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : policy_check
+Appel IA : non
+
+CAS 40 — Autorisation
+Situation : État après suspension incertain. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : policy_check
+Appel IA : non
+
+CAS 41 — Résilience
+Situation : Ollama indisponible. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : degraded_safe
+Appel IA : non
+
+CAS 42 — Résilience
+Situation : D1 déconnecté, D2 critique. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : degraded_safe
+Appel IA : non
+
+CAS 43 — Résilience
+Situation : D2 déconnecté, D1 anomalie faible. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : degraded_safe
+Appel IA : non
+
+CAS 44 — Résilience
+Situation : SQLite indisponible. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : degraded_safe
+Appel IA : non
+
+CAS 45 — Résilience
+Situation : Crash après action. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : degraded_safe
+Appel IA : non
+
+CAS 46 — Résilience
+Situation : Horloge incertaine. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : degraded_safe
+Appel IA : non
+
+CAS 47 — Résilience
+Situation : File pleine et doublons. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : degraded_safe
+Appel IA : non
+
+CAS 48 — Résilience
+Situation : Échec scan Defender. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : degraded_safe
+Appel IA : non
+
+CAS 49 — Résilience
+Situation : Redémarrage avec action pendante. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : degraded_safe
+Appel IA : non
+
+CAS 50 — Résilience
+Situation : Mode simulation uniquement. Cas synthétique pour tester évaluation, policy et audit.
+Décision attendue : degraded_safe
+Appel IA : non
+
+
+CONTRAT COMMUN INTER-DÉMONS V1
+Transport produit : Named Pipe locale \\.\pipe\SentinelCore.Guard, hébergée par le démon 3. Connexion locale uniquement, ACL explicites limitées aux comptes de service SentinelCore; refuser clients anonymes/inconnus et accès réseau. D1 et D2 sont clients. Pour tests, utiliser un transport JSONL (un message JSON par ligne) derrière l’interface commune IInterDaemonBus; le contenu et l’ordre des messages restent identiques au transport produit.
+
+Enveloppe obligatoire : messageId (UUID), correlationId (UUID ou ID d’affaire), timestampUtc (ISO-8601 UTC), sourceDaemon (HumanBehaviorMonitor | ThreatMonitor | RiskResponseGuard), destination (RiskResponseGuard | HumanBehaviorMonitor | ThreatMonitor), messageType, schemaVersion=1, expiresAtUtc (ISO-8601 UTC), payload (objet JSON). Limite commune : 64 KiB par message UTF-8 avant framing. Les messages sur le pipe sont précédés d’un entier longueur; JSONL utilise une ligne complète. Refuser payload invalide, champ requis absent, version inconnue, message expiré ou source non authentifiée.
+
+Handshake : D1/D2 -> D3 HELLO; D3 -> client WELCOME avec sessionId et supportedSchema. Chaque message reçu est ACK(messageId, status=ACCEPTED|REJECTED|DUPLICATE, reason?). D3 déduplique messageId. Émetteur retente au plus 3 fois avec backoff borné; pas de retry après expiration.
+
+Types v1 : HELLO, WELCOME, HEARTBEAT, USER_CONTEXT (D1->D3), BEHAVIOR_DEVIATION (D1->D3), THREAT_FINDING (D2->D3), TELEMETRY_GAP (D2->D3), SESSION_CONTEXT_REQUEST (D2->D3), SESSION_CONTEXT_RESPONSE (D1->D3 via D3), CONTEXT_REQUEST (D3->D1/D2), CONTEXT_RESPONSE (D1/D2->D3), MASTER_AUTH_REQUIRED (D3->D1/UI), MASTER_AUTH_RESULT (D1->D3), ACTION_REQUEST (D3->adaptateur interne seulement), ACTION_RESULT (adaptateur->D3). D1/D2 rejettent ACTION_REQUEST.
+
+Relais de contexte : D2 envoie SESSION_CONTEXT_REQUEST au Guard avec correlationId, champs demandés parmi sessionState, localOrRemote, recentAuthBand, deadlineUtc. D3 vérifie allowlist et consentement, crée CONTEXT_REQUEST à D1, attend au plus 2 secondes (configurable), puis transmet à D2 une CONTEXT_RESPONSE via son pipe avec la même correlationId; en absence de réponse, statut NOT_AVAILABLE. D2 ne reçoit jamais profil, métriques de frappe/souris, caméra, identité faciale, nom utilisateur ni secret. Autres demandes D3->D1/D2 suivent le même délai, expiration et whitelist.
+
+Action : ACTION_REQUEST n’est pas un message inter-démon routé. D3 appelle uniquement son ActionCatalog interne avec actionType enum, arguments typés et allowlist, policyId/version, evidenceRefs, approvalRef?, idempotencyKey, deadlineUtc. Les actions sont simulées par défaut. Aucun shell/PowerShell arbitraire, chemin non validé ou contenu IA n’est exécutable.
+
+Pannes : chaque démon publie HEARTBEAT toutes les 10 secondes; après 30 secondes sans heartbeat D3 marque le démon DEGRADED. Files d’attente bornées, jamais bloquer les collecteurs. D3 continue ses règles déterministes sans Ollama; si D1 est indisponible, poursuivre l’analyse D2 sans le signal humain; si D2 manque, un signal D1 seul ne peut pas déclencher une action destructive. Tous les délais, rejets, pertes, décisions et résultats sont journalisés.

@@ -7,12 +7,15 @@ internal sealed class MasterPasswordDialog : Form
     private readonly Label _message = new() { AutoSize = true, MaximumSize = new Size(400, 0) };
     public string? Password => _password.Text;
 
-    public MasterPasswordDialog(bool isSetup)
+    public MasterPasswordDialog(bool isSetup, string? purpose = null)
     {
         Text = isSetup ? "Première configuration — SentinelCore" : "Mot de passe maître — SentinelCore";
         FormBorderStyle = FormBorderStyle.FixedDialog; StartPosition = FormStartPosition.CenterScreen; MaximizeBox = false; MinimizeBox = false;
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(16), AutoSize = true, ColumnCount = 1 };
-        layout.Controls.Add(new Label { Text = isSetup ? "Crée le mot de passe maître requis pour démarrer l’apprentissage." : "Entre le mot de passe maître pour confirmer ton identité.", AutoSize = true, MaximumSize = new Size(400, 0) });
+        var prompt = isSetup ? "Crée le mot de passe maître requis pour démarrer l’apprentissage."
+            : string.IsNullOrWhiteSpace(purpose) ? "Entre le mot de passe maître pour confirmer ton identité."
+            : $"Entre le mot de passe maître pour autoriser la mesure de sécurité : {purpose}.";
+        layout.Controls.Add(new Label { Text = prompt, AutoSize = true, MaximumSize = new Size(400, 0) });
         layout.Controls.Add(new Label { Text = "Mot de passe (12 caractères minimum) :", AutoSize = true }); layout.Controls.Add(_password);
         if (isSetup) { layout.Controls.Add(new Label { Text = "Confirme le mot de passe :", AutoSize = true }); layout.Controls.Add(_confirm); }
         layout.Controls.Add(_message);

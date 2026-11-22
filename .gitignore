@@ -1,3 +1,33 @@
-# Machine-learning weights are fetched by the pinned, hash-verifying script.
+# Build and IDE output
+**/bin/
+**/obj/
+**/artifacts/
+.vs/
+.idea/
+*.user
+*.suo
+
+# Local credentials and protected settings
+.env
+.env.*
+*.dpapi
+telegram-alerts.json
+appsettings.Local.json
+
+# Downloaded ML weights are obtained through the pinned, hash-checking scripts.
 Demon 1/Mode_Validation/Modeles/*.onnx
 Demon 1/Mode_Validation/Modeles/*.download
+**/models/*.onnx
+**/models/*.download
+
+# Generated packages and SQLite sidecars. The checked-in training fixtures stay included.
+dist/*.exe
+dist/**/*.exe
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
+
+# Duplicate copies; canonical training fixtures live with their tests/modules.
+Demon 2/Demon2_Training.sqlite
+Demon 3/Demon3_RiskGuard_Training.sqlite

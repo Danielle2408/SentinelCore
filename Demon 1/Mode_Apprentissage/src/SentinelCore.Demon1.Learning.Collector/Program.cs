@@ -39,10 +39,11 @@ public static class CollectorRuntime
             throw new InvalidOperationException("Authentification absente, expirée ou invalide. Démarre la collecte depuis la fenêtre SentinelCore.");
         var idleLimitSeconds = int.TryParse(o.GetValueOrDefault("idle-seconds", "90"), out var idleArg) ? Math.Clamp(idleArg, 30, 900) : 90;
         var windowSeconds = int.TryParse(o.GetValueOrDefault("window-seconds", "15"), out var windowArg) ? Math.Clamp(windowArg, 10, 60) : 15;
+        var contextRetentionDays = int.TryParse(o.GetValueOrDefault("context-retention-days", "30"), out var retentionArg) ? Math.Clamp(retentionArg, 1, 90) : 30;
         var profileId = context.Split('|', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? "PROFIL_1";
         if (!profileId.StartsWith("PROFIL_", StringComparison.Ordinal) || !int.TryParse(profileId.AsSpan(7), out var profileNumber) || profileNumber is < 1 or > 8)
             throw new ArgumentException("Le contexte doit commencer par PROFIL_1 à PROFIL_8.");
-        using var repository = new SqliteLearningProfileRepository(database);
+        using var repository = new SqliteLearningProfileRepository(database, contextRetentionDays);
         var service = new LearningModeService(repository);
         var ignorePid = int.TryParse(o.GetValueOrDefault("ignore-pid"), out var parsedPid) ? parsedPid : 0;
         var collector = new RawInputLearningCollector(context, ignorePid, windowSeconds);
@@ -191,7 +192,7 @@ public static class CollectorRuntime
         return result;
     }
     private static string Need(Dictionary<string, string> options, string name) => options.TryGetValue(name, out var value) ? value : throw new ArgumentException($"Argument --{name} manquant.");
-    private static void PrintHelp() => Console.WriteLine("SentinelCore Learning Collector\n  collect --db PATH --sid SID --context CONTEXT --status PATH --stop PATH --auth-ticket PATH --auth-proof TOKEN\n  list --db PATH --sid SID [--take 50]");
+    private static void PrintHelp() => Console.WriteLine("SentinelCore Learning Collector\n  collect --db PATH --sid SID --context CONTEXT --status PATH --stop PATH --auth-ticket PATH --auth-proof TOKEN [--window-seconds 15] [--idle-seconds 90] [--context-retention-days 30]\n  list --db PATH --sid SID [--take 50]");
 }
 
 internal sealed record CollectedWindow(IReadOnlyDictionary<string, double> Features, double Quality);
