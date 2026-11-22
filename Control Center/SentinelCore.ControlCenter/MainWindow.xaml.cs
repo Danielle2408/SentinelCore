@@ -192,13 +192,21 @@ public partial class MainWindow : Window
         SetBusy(true);
         try
         {
+            var built = 0;
             foreach (var solution in SolutionPaths())
             {
+                if (ShouldSkipBuildForRunningProcess(solution)) continue;
+                if (Path.GetFileName(solution).Equals("SentinelCore.ControlCenter.slnx", StringComparison.OrdinalIgnoreCase))
+                {
+                    Log("Centre de contrôle déjà ouvert; sa solution n’est pas reconstruite pendant son exécution.");
+                    continue;
+                }
                 Log($"Construction : {Path.GetFileName(solution)}");
                 var code = await RunCommandAsync("dotnet", ["build", solution, "--configuration", "Release", "--nologo", "-m:1", "-p:NuGetAudit=false"], _workspaceRoot!);
                 if (code != 0) { Log($"ÉCHEC : {Path.GetFileName(solution)} (code {code}). Consulte le journal."); return; }
+                built++;
             }
-            Log("Construction terminée pour D1, D2, D3 et le Centre de contrôle.");
+            Log($"Construction terminée : {built} solution(s) construite(s); les processus actifs et le Centre ouvert ont été ignorés.");
         }
         catch (Exception ex) { Log("Erreur de construction : " + ex.Message); }
         finally { SetBusy(false); }
@@ -217,6 +225,12 @@ public partial class MainWindow : Window
                 Log("Certains modules ne sont pas encore construits; construction avant démarrage.");
                 foreach (var solution in SolutionPaths())
                 {
+                    if (ShouldSkipBuildForRunningProcess(solution)) continue;
+                    if (Path.GetFileName(solution).Equals("SentinelCore.ControlCenter.slnx", StringComparison.OrdinalIgnoreCase))
+                    {
+                        Log("Centre de contrôle déjà ouvert; sa solution n’est pas reconstruite pendant son exécution.");
+                        continue;
+                    }
                     var code = await RunCommandAsync("dotnet", ["build", solution, "--configuration", "Release", "--nologo", "-m:1", "-p:NuGetAudit=false"], _workspaceRoot!);
                     if (code != 0) { Log($"Construction échouée : {Path.GetFileName(solution)} (code {code})."); return; }
                 }
@@ -502,7 +516,7 @@ public partial class MainWindow : Window
     private void StartConsoleProcess(string key, string exe, IReadOnlyList<string> args)
     {
         if (_processes.TryGetValue(key, out var old) && !old.HasExited) { Log($"{key} est déjà actif."); return; }
-        if (IsExternalProcessRunning(key)) { Log($"{key} est déjà actif hors du centre; aucun doublon n’a été lancé."); RefreshProcessCards(); return; }
+        if (IsExternalProcessRunning(key)) { Log($"{key} est déjà actif hors du centre; aucun doublon ni mise à jour n’a été lancé. Arrête-le depuis son terminal avant de le reconstruire."); RefreshProcessCards(); return; }
         if (!File.Exists(exe)) throw new FileNotFoundException($"Exécutable introuvable : {exe}. Construis d’abord les modules.");
         if (key == "D3") _guardListenerReady = null;
         if (key == "D2") _d2GuardAcknowledged = null;
@@ -809,6 +823,21 @@ public partial class MainWindow : Window
         yield return Path.Combine(_workspaceRoot!, "Demon 2", "SentinelCore.Demon2.slnx");
         yield return Path.Combine(_workspaceRoot!, "Demon 3", "DEMON 3", "Demon3-Starter", "SentinelCore.Demon3.slnx");
         yield return Path.Combine(_workspaceRoot!, "Control Center", "SentinelCore.ControlCenter.slnx");
+    }
+
+    private bool ShouldSkipBuildForRunningProcess(string solution)
+    {
+        var daemon = Path.GetFileName(solution) switch
+        {
+            "SentinelCore.Demon1.slnx" => "D1",
+            "SentinelCore.Demon2.slnx" => "D2",
+            "SentinelCore.Demon3.slnx" => "D3",
+            _ => null
+        };
+        if (daemon is null || !IsObservedRunning(daemon)) return false;
+
+        Log($"Construction de {daemon} ignorée : son processus est déjà actif et verrouille peut-être ses binaires. Pour le mettre à jour, arrête-le depuis son terminal, puis reconstruis et redémarre depuis le Centre.");
+        return true;
     }
 
     private bool AllBinariesExist()
